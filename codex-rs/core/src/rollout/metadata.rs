@@ -98,22 +98,23 @@ pub(crate) async fn extract_metadata_from_rollout(
     default_provider: &str,
     otel: Option<&OtelManager>,
 ) -> anyhow::Result<ExtractionOutcome> {
-    let (items, _thread_id, parse_errors) =
-        RolloutRecorder::load_rollout_items(rollout_path).await?;
-    if items.is_empty() {
+    let (source, _thread_id, parse_errors) = RolloutRecorder::load_source(rollout_path).await?;
+    let rollout_start = source.start_index();
+    if source.iter_forward_from(rollout_start).next().is_none() {
         return Err(anyhow::anyhow!(
             "empty session file: {}",
             rollout_path.display()
         ));
     }
-    let builder = builder_from_items(items.as_slice(), rollout_path).ok_or_else(|| {
-        anyhow::anyhow!(
-            "rollout missing metadata builder: {}",
-            rollout_path.display()
-        )
-    })?;
+    let builder = builder_from_items(
+        source
+            .iter_forward_from(rollout_start)
+            .map(|(_, item)| item),
+        rollout_path,
+    )
+    .ok_or_else(|| anyhow::anyhow!("rollout missing metadata builder: {}", rollout_path.display()))?;
     let mut metadata = builder.build(default_provider);
-    for item in &items {
+    for (_, item) in source.iter_forward_from(rollout_start) {
         apply_rollout_item(&mut metadata, item, default_provider);
     }
     if let Some(updated_at) = file_modified_time_utc(rollout_path).await {
@@ -130,7 +131,7 @@ pub(crate) async fn extract_metadata_from_rollout(
     }
     Ok(ExtractionOutcome {
         metadata,
-        memory_mode: items.iter().rev().find_map(|item| match item {
+        memory_mode: source.iter_reverse_from(source.end_index()).find_map(|(_, item)| match item {
             RolloutItem::SessionMeta(meta_line) => meta_line.meta.memory_mode.clone(),
             RolloutItem::ResponseItem(_)
             | RolloutItem::Compacted(_)
