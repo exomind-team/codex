@@ -220,7 +220,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
     ];
 
     let reconstructed = session
-        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .reconstruct_history_from_rollout(&turn_context, rollout_items)
         .await;
 
     assert_eq!(
@@ -302,7 +302,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_inc
     ];
 
     let reconstructed = session
-        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .reconstruct_history_from_rollout(&turn_context, rollout_items)
         .await;
 
     assert_eq!(
@@ -408,7 +408,7 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
     ];
 
     let reconstructed = session
-        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .reconstruct_history_from_rollout(&turn_context, rollout_items)
         .await;
 
     assert_eq!(
@@ -469,7 +469,7 @@ async fn reconstruct_history_rollback_clears_history_and_metadata_when_exceeding
     ];
 
     let reconstructed = session
-        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .reconstruct_history_from_rollout(&turn_context, rollout_items)
         .await;
 
     assert_eq!(reconstructed.history, Vec::new());
@@ -675,7 +675,7 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_does_
     ];
 
     let reconstructed = session
-        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .reconstruct_history_from_rollout(&turn_context, rollout_items)
         .await;
 
     assert_eq!(
@@ -728,7 +728,7 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_clear
     ];
 
     let reconstructed = session
-        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .reconstruct_history_from_rollout(&turn_context, rollout_items)
         .await;
 
     assert!(reconstructed.reference_context_item.is_none());

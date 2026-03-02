@@ -1834,9 +1834,10 @@ impl Session {
                 let rollout_items = resumed_history.history;
                 let restored_tool_selection =
                     Self::extract_mcp_tool_selection_from_rollout(&rollout_items);
+                let token_info = Self::last_token_info_from_rollout(&rollout_items);
 
                 let reconstructed_rollout = self
-                    .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+                    .reconstruct_history_from_rollout(&turn_context, rollout_items)
                     .await;
                 let previous_turn_settings = reconstructed_rollout.previous_turn_settings.clone();
                 self.set_previous_turn_settings(previous_turn_settings.clone())
@@ -1875,7 +1876,7 @@ impl Session {
 
                 // Seed usage info from the recorded rollout so UIs can show token counts
                 // immediately on resume/fork.
-                if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
+                if let Some(info) = token_info {
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
                 }
@@ -1892,9 +1893,16 @@ impl Session {
             InitialHistory::Forked(rollout_items) => {
                 let restored_tool_selection =
                     Self::extract_mcp_tool_selection_from_rollout(&rollout_items);
+                let token_info = Self::last_token_info_from_rollout(&rollout_items);
+                let should_persist_forked_rollout = !rollout_items.is_empty();
+
+                // If persisting, persist all rollout items as-is (recorder filters).
+                if should_persist_forked_rollout {
+                    self.persist_rollout_items(&rollout_items).await;
+                }
 
                 let reconstructed_rollout = self
-                    .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+                    .reconstruct_history_from_rollout(&turn_context, rollout_items)
                     .await;
                 self.set_previous_turn_settings(
                     reconstructed_rollout.previous_turn_settings.clone(),
@@ -1916,17 +1924,12 @@ impl Session {
 
                 // Seed usage info from the recorded rollout so UIs can show token counts
                 // immediately on resume/fork.
-                if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
+                if let Some(info) = token_info {
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
                 }
                 if let Some(selected_tools) = restored_tool_selection {
                     self.set_mcp_tool_selection(selected_tools).await;
-                }
-
-                // If persisting, persist all rollout items as-is (recorder filters)
-                if !rollout_items.is_empty() {
-                    self.persist_rollout_items(&rollout_items).await;
                 }
 
                 // Append the current session's initial context after the reconstructed history.
@@ -7340,7 +7343,7 @@ mod tests {
 
         let reconstruction_turn = session.new_default_turn().await;
         let reconstructed = session
-            .reconstruct_history_from_rollout(reconstruction_turn.as_ref(), &rollout_items)
+            .reconstruct_history_from_rollout(reconstruction_turn.as_ref(), rollout_items)
             .await;
 
         assert_eq!(expected, reconstructed.history);
@@ -7376,7 +7379,7 @@ mod tests {
         })];
 
         let reconstructed = session
-            .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+            .reconstruct_history_from_rollout(&turn_context, rollout_items)
             .await;
 
         assert_eq!(reconstructed.history, replacement_history);
