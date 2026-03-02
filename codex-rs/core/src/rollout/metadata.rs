@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::rollout;
+use crate::rollout::RolloutStore;
 use crate::rollout::list::parse_timestamp_uuid_from_filename;
-use crate::rollout::recorder::RolloutRecorder;
 use crate::state_db::normalize_cwd_for_state_db;
 use chrono::DateTime;
 use chrono::NaiveDateTime;
@@ -98,7 +98,7 @@ pub(crate) async fn extract_metadata_from_rollout(
     default_provider: &str,
     otel: Option<&OtelManager>,
 ) -> anyhow::Result<ExtractionOutcome> {
-    let (source, _thread_id, parse_errors) = RolloutRecorder::load_source(rollout_path).await?;
+    let (source, _thread_id, parse_errors) = RolloutStore::load_source(rollout_path).await?;
     let rollout_start = source.start_index();
     // TODO(ccunningham): once the rollout source itself becomes disk-lazy, this metadata pass
     // should stream directly from that `RolloutSource` without forcing older rows into memory.

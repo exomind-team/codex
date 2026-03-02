@@ -1,5 +1,5 @@
 use crate::Prompt;
-use crate::RolloutRecorder;
+use crate::RolloutStore;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::config::Config;
@@ -290,7 +290,7 @@ mod job {
         rollout_cwd: &Path,
         stage_one_context: &RequestContext,
     ) -> anyhow::Result<(StageOneOutput, Option<TokenUsage>)> {
-        let (source, _, _) = RolloutRecorder::load_source(rollout_path).await?;
+        let (source, _, _) = RolloutStore::load_source(rollout_path).await?;
         // Memory extraction summarizes an arbitrary persisted rollout by path, not the active
         // in-process session state. This stage still wants the full stored transcript payload, so
         // it intentionally flattens the loaded source into raw items after going through the same
