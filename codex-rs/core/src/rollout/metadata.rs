@@ -62,11 +62,11 @@ pub(crate) fn builder_from_session_meta(
     Some(builder)
 }
 
-pub(crate) fn builder_from_items(
-    items: &[RolloutItem],
+pub(crate) fn builder_from_items<'a>(
+    items: impl IntoIterator<Item = &'a RolloutItem>,
     rollout_path: &Path,
 ) -> Option<ThreadMetadataBuilder> {
-    if let Some(session_meta) = items.iter().find_map(|item| match item {
+    if let Some(session_meta) = items.into_iter().find_map(|item| match item {
         RolloutItem::SessionMeta(meta_line) => Some(meta_line),
         RolloutItem::ResponseItem(_)
         | RolloutItem::Compacted(_)
