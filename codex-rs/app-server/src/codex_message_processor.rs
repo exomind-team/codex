@@ -3287,8 +3287,9 @@ impl CodexMessageProcessor {
             }
         };
 
-        // App-server thread resume still hands an eager `InitialHistory` into the core startup
-        // path; switch this once resume startup accepts a `RolloutSource`-backed rollout input.
+        // App-server currently asks `codex-core` for an eager `InitialHistory` before starting
+        // the thread. The rollout parsing still lives in core; this callsite only reflects the
+        // current eager startup interface.
         match RolloutStore::get_rollout_history(&rollout_path).await {
             Ok(initial_history) => Some(initial_history),
             Err(err) => {
