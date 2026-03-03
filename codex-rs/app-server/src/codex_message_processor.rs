@@ -3287,9 +3287,9 @@ impl CodexMessageProcessor {
             }
         };
 
-        // App-server currently asks `codex-core` for an eager `InitialHistory` before starting
-        // the thread. The rollout parsing still lives in core; this callsite only reflects the
-        // current eager startup interface.
+        // App-server should not need direct rollout-file access. This call still goes through
+        // core's eager `InitialHistory` startup interface, so app-server asks `codex-core` to
+        // materialize the rollout before thread startup.
         match RolloutStore::get_rollout_history(&rollout_path).await {
             Ok(initial_history) => Some(initial_history),
             Err(err) => {
