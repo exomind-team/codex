@@ -165,9 +165,9 @@ impl AgentControl {
                                 "parent thread rollout unavailable for fork: {parent_thread_id}"
                             ))
                         })?;
-                    // Agent forking appends a fresh tool output onto the parent rollout items, so
-                    // it still needs the owned history vector until fork startup becomes
-                    // `RolloutSource`-backed end-to-end.
+                    // TODO(ccunningham): delete this eager owned-history path once fork startup
+                    // becomes `RolloutSource`-backed end-to-end; today agent forking still
+                    // appends a fresh tool output onto the parent rollout items before startup.
                     let mut forked_rollout_items = RolloutStore::get_rollout_history(&rollout_path)
                         .await?
                         .get_rollout_items();
