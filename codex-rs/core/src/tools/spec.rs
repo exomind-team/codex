@@ -970,6 +970,64 @@ fn create_request_user_input_tool(
 }
 
 fn create_request_permissions_tool() -> ToolSpec {
+    let file_system_permissions = JsonSchema::Object {
+        properties: BTreeMap::from([
+            (
+                "read".to_string(),
+                JsonSchema::Array {
+                    items: Box::new(JsonSchema::String { description: None }),
+                    description: Some("Absolute paths to grant read access to.".to_string()),
+                },
+            ),
+            (
+                "write".to_string(),
+                JsonSchema::Array {
+                    items: Box::new(JsonSchema::String { description: None }),
+                    description: Some("Absolute paths to grant write access to.".to_string()),
+                },
+            ),
+        ]),
+        required: None,
+        additional_properties: Some(false.into()),
+    };
+    let macos_permissions = JsonSchema::Object {
+        properties: BTreeMap::from([
+            (
+                "preferences".to_string(),
+                JsonSchema::String {
+                    description: Some(
+                        "macOS preferences access. May be a mode string such as `read_only` or `read_write`, or a boolean."
+                            .to_string(),
+                    ),
+                },
+            ),
+            (
+                "automations".to_string(),
+                JsonSchema::Array {
+                    items: Box::new(JsonSchema::String { description: None }),
+                    description: Some(
+                        "macOS automation access. May be a boolean or a list of target app bundle identifiers."
+                            .to_string(),
+                    ),
+                },
+            ),
+            (
+                "accessibility".to_string(),
+                JsonSchema::Boolean {
+                    description: Some("Whether to request macOS accessibility access.".to_string()),
+                },
+            ),
+            (
+                "calendar".to_string(),
+                JsonSchema::Boolean {
+                    description: Some("Whether to request macOS calendar access.".to_string()),
+                },
+            ),
+        ]),
+        required: None,
+        additional_properties: Some(false.into()),
+    };
+
     let mut properties = BTreeMap::new();
     properties.insert(
         "reason".to_string(),
@@ -982,9 +1040,18 @@ fn create_request_permissions_tool() -> ToolSpec {
     properties.insert(
         "permissions".to_string(),
         JsonSchema::Object {
-            properties: BTreeMap::new(),
+            properties: BTreeMap::from([
+                (
+                    "network".to_string(),
+                    JsonSchema::Boolean {
+                        description: Some("Whether to request network access.".to_string()),
+                    },
+                ),
+                ("file_system".to_string(), file_system_permissions),
+                ("macos".to_string(), macos_permissions),
+            ]),
             required: None,
-            additional_properties: Some(true.into()),
+            additional_properties: Some(false.into()),
         },
     );
 
@@ -2108,6 +2175,7 @@ mod tests {
             create_exec_command_tool(true, false),
             create_write_stdin_tool(),
             PLAN_TOOL.clone(),
+            create_request_permissions_tool(),
             create_request_user_input_tool(CollaborationModesConfig::default()),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {
@@ -3175,6 +3243,56 @@ Examples of valid command strings:
             panic!("expected sandbox_permissions description");
         };
         assert!(description.contains("with_additional_permissions"));
+    }
+
+    #[test]
+    fn request_permissions_tool_includes_full_permission_schema() {
+        let tool = super::create_request_permissions_tool();
+        let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = tool else {
+            panic!("expected function tool");
+        };
+        let JsonSchema::Object { properties, .. } = parameters else {
+            panic!("expected object parameters");
+        };
+        let Some(JsonSchema::Object {
+            properties: permission_properties,
+            additional_properties,
+            ..
+        }) = properties.get("permissions")
+        else {
+            panic!("expected permissions object");
+        };
+
+        assert_eq!(additional_properties, &Some(false.into()));
+        assert!(permission_properties.contains_key("network"));
+        assert!(permission_properties.contains_key("file_system"));
+        assert!(permission_properties.contains_key("macos"));
+
+        let Some(JsonSchema::Object {
+            properties: file_system_properties,
+            additional_properties,
+            ..
+        }) = permission_properties.get("file_system")
+        else {
+            panic!("expected file_system object");
+        };
+        assert_eq!(additional_properties, &Some(false.into()));
+        assert!(file_system_properties.contains_key("read"));
+        assert!(file_system_properties.contains_key("write"));
+
+        let Some(JsonSchema::Object {
+            properties: macos_properties,
+            additional_properties,
+            ..
+        }) = permission_properties.get("macos")
+        else {
+            panic!("expected macos object");
+        };
+        assert_eq!(additional_properties, &Some(false.into()));
+        assert!(macos_properties.contains_key("preferences"));
+        assert!(macos_properties.contains_key("automations"));
+        assert!(macos_properties.contains_key("accessibility"));
+        assert!(macos_properties.contains_key("calendar"));
     }
 
     #[test]
