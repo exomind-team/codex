@@ -515,7 +515,7 @@ impl RolloutStore {
             rollout_path,
             source,
             meta,
-            git_info_task,
+            git_info_handle,
             event_persistence_mode,
         ) = match params {
             RolloutStoreParams::Create {
@@ -564,7 +564,8 @@ impl RolloutStore {
                     git: None,
                 };
                 let cwd = config.cwd.clone();
-                let git_info_task = tokio::task::spawn(async move { collect_git_info(&cwd).await });
+                let git_info_handle =
+                    tokio::task::spawn(async move { collect_git_info(&cwd).await });
 
                 (
                     None,
@@ -574,7 +575,7 @@ impl RolloutStore {
                         session_meta_line.clone(),
                     )]),
                     Some(session_meta_line),
-                    Some(git_info_task),
+                    Some(git_info_handle),
                     event_persistence_mode,
                 )
             }
@@ -617,7 +618,7 @@ impl RolloutStore {
             deferred_log_file_info,
             rx,
             meta,
-            git_info_task,
+            git_info_handle,
             rollout_path.clone(),
             state_db_ctx.clone(),
             state_builder,
@@ -883,7 +884,7 @@ async fn rollout_writer(
     mut deferred_log_file_info: Option<LogFileInfo>,
     mut rx: mpsc::Receiver<RolloutCmd>,
     mut meta: Option<SessionMetaLine>,
-    mut git_info_task: Option<JoinHandle<Option<GitInfo>>>,
+    mut git_info_handle: Option<JoinHandle<Option<GitInfo>>>,
     rollout_path: PathBuf,
     state_db_ctx: Option<StateDbHandle>,
     mut state_builder: Option<ThreadMetadataBuilder>,
@@ -904,7 +905,7 @@ async fn rollout_writer(
         write_session_meta(
             writer.as_mut(),
             session_meta,
-            &mut git_info_task,
+            &mut git_info_handle,
             &rollout_path,
             state_db_ctx.as_deref(),
             &mut state_builder,
@@ -958,7 +959,7 @@ async fn rollout_writer(
                             write_session_meta(
                                 writer.as_mut(),
                                 session_meta,
-                                &mut git_info_task,
+                                &mut git_info_handle,
                                 &rollout_path,
                                 state_db_ctx.as_deref(),
                                 &mut state_builder,
@@ -1015,7 +1016,7 @@ async fn rollout_writer(
 async fn write_session_meta(
     mut writer: Option<&mut JsonlWriter>,
     mut session_meta_line: SessionMetaLine,
-    git_info_task: &mut Option<JoinHandle<Option<GitInfo>>>,
+    git_info_handle: &mut Option<JoinHandle<Option<GitInfo>>>,
     rollout_path: &Path,
     state_db_ctx: Option<&StateRuntime>,
     state_builder: &mut Option<ThreadMetadataBuilder>,
@@ -1023,7 +1024,7 @@ async fn write_session_meta(
     generate_memories: bool,
 ) -> std::io::Result<()> {
     if session_meta_line.git.is_none()
-        && let Some(task) = git_info_task.take()
+        && let Some(task) = git_info_handle.take()
     {
         match task.await {
             Ok(git_info) => {
