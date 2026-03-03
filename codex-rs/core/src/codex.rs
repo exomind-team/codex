@@ -1835,7 +1835,7 @@ impl Session {
             InitialHistory::Resumed(resumed_history) => {
                 let (reconstructed_rollout, restored_tool_selection, token_info) =
                     if resumed_history.history.is_empty() {
-                        let rollout = self.services.rollout.read().await;
+                        let rollout = self.services.rollout.lock().await;
                         let rollout = rollout
                             .as_ref()
                             .expect("resumed session should have a rollout store");
@@ -1909,9 +1909,6 @@ impl Session {
                 }
             }
             InitialHistory::Forked(rollout_items) => {
-                let restored_tool_selection =
-                    Self::extract_mcp_tool_selection_from_rollout(&rollout_items);
-                let token_info = Self::last_token_info_from_rollout(&rollout_items);
                 let should_persist_forked_rollout = !rollout_items.is_empty();
 
                 // If persisting, persist all rollout items as-is (recorder filters).
@@ -1920,6 +1917,9 @@ impl Session {
                 }
 
                 let source = InMemoryRolloutSource::new(rollout_items);
+                let restored_tool_selection =
+                    Self::extract_mcp_tool_selection_from_rollout_source(&source);
+                let token_info = Self::last_token_info_from_rollout_source(&source);
                 let reconstructed_rollout =
                     self.reconstruct_history_from_rollout(&turn_context, &source);
                 self.set_previous_turn_settings(
@@ -7274,7 +7274,9 @@ mod tests {
             ),
         ];
 
-        let selected = Session::extract_mcp_tool_selection_from_rollout(&rollout_items);
+        let selected = Session::extract_mcp_tool_selection_from_rollout_source(
+            &InMemoryRolloutSource::new(rollout_items),
+        );
         assert_eq!(
             selected,
             Some(vec![
@@ -7305,7 +7307,9 @@ mod tests {
             ),
         ];
 
-        let selected = Session::extract_mcp_tool_selection_from_rollout(&rollout_items);
+        let selected = Session::extract_mcp_tool_selection_from_rollout_source(
+            &InMemoryRolloutSource::new(rollout_items),
+        );
         assert_eq!(
             selected,
             Some(vec!["mcp__codex_apps__calendar_delete_event".to_string(),])
@@ -7341,7 +7345,9 @@ mod tests {
             ),
         ];
 
-        let selected = Session::extract_mcp_tool_selection_from_rollout(&rollout_items);
+        let selected = Session::extract_mcp_tool_selection_from_rollout_source(
+            &InMemoryRolloutSource::new(rollout_items),
+        );
         assert_eq!(
             selected,
             Some(vec!["mcp__codex_apps__calendar_list_events".to_string(),])
@@ -7354,7 +7360,9 @@ mod tests {
             SEARCH_TOOL_BM25_TOOL_NAME,
             "search-1",
         )];
-        let selected = Session::extract_mcp_tool_selection_from_rollout(&rollout_items);
+        let selected = Session::extract_mcp_tool_selection_from_rollout_source(
+            &InMemoryRolloutSource::new(rollout_items),
+        );
         assert_eq!(selected, None);
     }
 
