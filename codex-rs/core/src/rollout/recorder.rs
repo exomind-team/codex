@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::{self};
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
@@ -49,6 +50,7 @@ use crate::state_db::StateDbHandle;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::truncate_text;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
@@ -507,95 +509,106 @@ impl RolloutStore {
         state_db_ctx: Option<StateDbHandle>,
         state_builder: Option<ThreadMetadataBuilder>,
     ) -> std::io::Result<Self> {
-        let (file, deferred_log_file_info, rollout_path, source, meta, event_persistence_mode) =
-            match params {
-                RolloutStoreParams::Create {
-                    conversation_id,
+        let (
+            file,
+            deferred_log_file_info,
+            rollout_path,
+            source,
+            meta,
+            git_info_task,
+            event_persistence_mode,
+        ) = match params {
+            RolloutStoreParams::Create {
+                conversation_id,
+                forked_from_id,
+                source,
+                base_instructions,
+                dynamic_tools,
+                event_persistence_mode,
+            } => {
+                let log_file_info = precompute_log_file_info(config, conversation_id)?;
+                let path = log_file_info.path.clone();
+                let session_id = log_file_info.conversation_id;
+                let started_at = log_file_info.timestamp;
+
+                let timestamp_format: &[FormatItem] = format_description!(
+                    "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
+                );
+                let timestamp = started_at
+                    .to_offset(time::UtcOffset::UTC)
+                    .format(timestamp_format)
+                    .map_err(|e| IoError::other(format!("failed to format timestamp: {e}")))?;
+
+                let session_meta = SessionMeta {
+                    id: session_id,
                     forked_from_id,
+                    timestamp,
+                    cwd: config.cwd.clone(),
+                    originator: originator().value,
+                    cli_version: env!("CARGO_PKG_VERSION").to_string(),
+                    agent_nickname: source.get_nickname(),
+                    agent_role: source.get_agent_role(),
                     source,
-                    base_instructions,
-                    dynamic_tools,
-                    event_persistence_mode,
-                } => {
-                    let log_file_info = precompute_log_file_info(config, conversation_id)?;
-                    let path = log_file_info.path.clone();
-                    let session_id = log_file_info.conversation_id;
-                    let started_at = log_file_info.timestamp;
+                    model_provider: Some(config.model_provider_id.clone()),
+                    base_instructions: Some(base_instructions),
+                    dynamic_tools: if dynamic_tools.is_empty() {
+                        None
+                    } else {
+                        Some(dynamic_tools)
+                    },
+                    memory_mode: (!config.memories.generate_memories)
+                        .then_some("disabled".to_string()),
+                };
+                let session_meta_line = SessionMetaLine {
+                    meta: session_meta,
+                    git: None,
+                };
+                let cwd = config.cwd.clone();
+                let git_info_task = tokio::task::spawn(async move { collect_git_info(&cwd).await });
 
-                    let timestamp_format: &[FormatItem] = format_description!(
-                        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
-                    );
-                    let timestamp = started_at
-                        .to_offset(time::UtcOffset::UTC)
-                        .format(timestamp_format)
-                        .map_err(|e| IoError::other(format!("failed to format timestamp: {e}")))?;
-
-                    let session_meta = SessionMeta {
-                        id: session_id,
-                        forked_from_id,
-                        timestamp,
-                        cwd: config.cwd.clone(),
-                        originator: originator().value,
-                        cli_version: env!("CARGO_PKG_VERSION").to_string(),
-                        agent_nickname: source.get_nickname(),
-                        agent_role: source.get_agent_role(),
-                        source,
-                        model_provider: Some(config.model_provider_id.clone()),
-                        base_instructions: Some(base_instructions),
-                        dynamic_tools: if dynamic_tools.is_empty() {
-                            None
-                        } else {
-                            Some(dynamic_tools)
-                        },
-                        memory_mode: (!config.memories.generate_memories)
-                            .then_some("disabled".to_string()),
-                    };
-                    let session_meta_line = SessionMetaLine {
-                        meta: session_meta,
-                        git: None,
-                    };
-
-                    (
-                        None,
-                        Some(log_file_info),
-                        path,
-                        InMemoryRolloutSource::new(vec![RolloutItem::SessionMeta(
-                            session_meta_line.clone(),
-                        )]),
-                        Some(session_meta_line),
-                        event_persistence_mode,
-                    )
-                }
-                RolloutStoreParams::Resume {
+                (
+                    None,
+                    Some(log_file_info),
                     path,
+                    InMemoryRolloutSource::new(vec![RolloutItem::SessionMeta(
+                        session_meta_line.clone(),
+                    )]),
+                    Some(session_meta_line),
+                    Some(git_info_task),
                     event_persistence_mode,
+                )
+            }
+            RolloutStoreParams::Resume {
+                path,
+                event_persistence_mode,
+                source,
+            } => {
+                let source = match source {
+                    Some(source) => source,
+                    None => match Self::load_source(path.as_path()).await {
+                        Ok((source, _, _)) => source,
+                        Err(err) => {
+                            warn!("failed to seed rollout source from {path:?}: {err}");
+                            InMemoryRolloutSource::new(Vec::new())
+                        }
+                    },
+                };
+                (
+                    Some(
+                        tokio::fs::OpenOptions::new()
+                            .append(true)
+                            .open(&path)
+                            .await?,
+                    ),
+                    None,
+                    path,
                     source,
-                } => {
-                    let source = match source {
-                        Some(source) => source,
-                        None => match Self::load_source(path.as_path()).await {
-                            Ok((source, _, _)) => source,
-                            Err(err) => {
-                                warn!("failed to seed rollout source from {path:?}: {err}");
-                                InMemoryRolloutSource::new(Vec::new())
-                            }
-                        },
-                    };
-                    (
-                        Some(
-                            tokio::fs::OpenOptions::new()
-                                .append(true)
-                                .open(&path)
-                                .await?,
-                        ),
-                        None,
-                        path,
-                        source,
-                        None,
-                        event_persistence_mode,
-                    )
-                }
-            };
+                    None,
+                    None,
+                    event_persistence_mode,
+                )
+            }
+        };
 
         // A reasonably-sized bounded channel. If the buffer fills up the send
         // future will yield, which is fine – we only need to ensure we do not
@@ -610,6 +623,7 @@ impl RolloutStore {
             deferred_log_file_info,
             rx,
             meta,
+            git_info_task,
             rollout_path.clone(),
             state_db_ctx.clone(),
             state_builder,
@@ -875,6 +889,7 @@ async fn rollout_writer(
     mut deferred_log_file_info: Option<LogFileInfo>,
     mut rx: mpsc::Receiver<RolloutCmd>,
     mut meta: Option<SessionMetaLine>,
+    mut git_info_task: Option<JoinHandle<Option<GitInfo>>>,
     rollout_path: PathBuf,
     state_db_ctx: Option<StateDbHandle>,
     mut state_builder: Option<ThreadMetadataBuilder>,
@@ -895,6 +910,7 @@ async fn rollout_writer(
         write_session_meta(
             writer.as_mut(),
             session_meta,
+            &mut git_info_task,
             &rollout_path,
             state_db_ctx.as_deref(),
             &mut state_builder,
@@ -948,6 +964,7 @@ async fn rollout_writer(
                             write_session_meta(
                                 writer.as_mut(),
                                 session_meta,
+                                &mut git_info_task,
                                 &rollout_path,
                                 state_db_ctx.as_deref(),
                                 &mut state_builder,
@@ -1004,14 +1021,27 @@ async fn rollout_writer(
 async fn write_session_meta(
     mut writer: Option<&mut JsonlWriter>,
     mut session_meta_line: SessionMetaLine,
+    git_info_task: &mut Option<JoinHandle<Option<GitInfo>>>,
     rollout_path: &Path,
     state_db_ctx: Option<&StateRuntime>,
     state_builder: &mut Option<ThreadMetadataBuilder>,
     default_provider: &str,
     generate_memories: bool,
 ) -> std::io::Result<()> {
-    if session_meta_line.git.is_none() {
-        session_meta_line.git = collect_git_info(&session_meta_line.meta.cwd).await;
+    if session_meta_line.git.is_none()
+        && let Some(task) = git_info_task.take()
+    {
+        match task.await {
+            Ok(git_info) => {
+                session_meta_line.git = git_info;
+            }
+            Err(err) => {
+                warn!(
+                    "failed to join startup git metadata collection for {}: {err}",
+                    session_meta_line.meta.cwd.display()
+                );
+            }
+        }
     }
 
     if state_db_ctx.is_some() {

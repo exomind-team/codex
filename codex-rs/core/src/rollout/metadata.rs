@@ -114,7 +114,12 @@ pub(crate) async fn extract_metadata_from_rollout(
             .map(|(_, item)| item),
         rollout_path,
     )
-    .ok_or_else(|| anyhow::anyhow!("rollout missing metadata builder: {}", rollout_path.display()))?;
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "rollout missing metadata builder: {}",
+            rollout_path.display()
+        )
+    })?;
     let mut metadata = builder.build(default_provider);
     for (_, item) in source.iter_forward_from(rollout_start) {
         apply_rollout_item(&mut metadata, item, default_provider);
@@ -133,13 +138,15 @@ pub(crate) async fn extract_metadata_from_rollout(
     }
     Ok(ExtractionOutcome {
         metadata,
-        memory_mode: source.iter_reverse_from(source.end_index()).find_map(|(_, item)| match item {
-            RolloutItem::SessionMeta(meta_line) => meta_line.meta.memory_mode.clone(),
-            RolloutItem::ResponseItem(_)
-            | RolloutItem::Compacted(_)
-            | RolloutItem::TurnContext(_)
-            | RolloutItem::EventMsg(_) => None,
-        }),
+        memory_mode: source.iter_reverse_from(source.end_index()).find_map(
+            |(_, item)| match item {
+                RolloutItem::SessionMeta(meta_line) => meta_line.meta.memory_mode.clone(),
+                RolloutItem::ResponseItem(_)
+                | RolloutItem::Compacted(_)
+                | RolloutItem::TurnContext(_)
+                | RolloutItem::EventMsg(_) => None,
+            },
+        ),
         parse_errors,
     })
 }
