@@ -3287,9 +3287,10 @@ impl CodexMessageProcessor {
             }
         };
 
-        // App-server should not need direct rollout-file access. This call still goes through
-        // core's eager `InitialHistory` startup interface, so app-server asks `codex-core` to
-        // materialize the rollout before thread startup.
+        // App-server should not need direct rollout-file access.
+        // TODO(ccunningham): make resumed startup stop requiring eager
+        // `InitialHistory::Resumed(Vec<RolloutItem>)` materialization so core can own rollout
+        // loading all the way through thread startup.
         match RolloutStore::get_rollout_history(&rollout_path).await {
             Ok(initial_history) => Some(initial_history),
             Err(err) => {
