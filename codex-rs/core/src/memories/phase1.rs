@@ -295,8 +295,11 @@ mod job {
         // in-process session state. This stage still wants the full stored transcript payload, so
         // it intentionally flattens the loaded `RolloutSource` into raw items after going through
         // the same rollout parsing path as reconstruction.
-        let rollout_items = source.into_items();
-        let rollout_contents = serialize_filtered_rollout_response_items(&rollout_items)?;
+        let rollout_contents = serialize_filtered_rollout_response_items(
+            source
+                .iter_forward_from(source.start_index())
+                .map(|(_, item)| item),
+        )?;
 
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
@@ -443,11 +446,11 @@ mod job {
     }
 
     /// Serializes filtered stage-1 memory items for prompt inclusion.
-    fn serialize_filtered_rollout_response_items(
-        items: &[RolloutItem],
+    fn serialize_filtered_rollout_response_items<'a>(
+        items: impl IntoIterator<Item = &'a RolloutItem>,
     ) -> crate::error::Result<String> {
         let filtered = items
-            .iter()
+            .into_iter()
             .filter_map(|item| {
                 if let RolloutItem::ResponseItem(item) = item
                     && should_persist_response_item_for_memories(item)
