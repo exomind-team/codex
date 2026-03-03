@@ -100,8 +100,6 @@ pub(crate) async fn extract_metadata_from_rollout(
 ) -> anyhow::Result<ExtractionOutcome> {
     let (source, _thread_id, parse_errors) = RolloutStore::load_source(rollout_path).await?;
     let rollout_start = source.start_index();
-    // TODO(ccunningham): once the rollout source itself becomes disk-lazy, this metadata pass
-    // should stream directly from that `RolloutSource` without forcing older rows into memory.
     if source.iter_forward_from(rollout_start).next().is_none() {
         return Err(anyhow::anyhow!(
             "empty session file: {}",
