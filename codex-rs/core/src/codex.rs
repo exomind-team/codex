@@ -1204,6 +1204,14 @@ impl Session {
             EventPersistenceMode::Limited
         };
 
+        let state_builder = match &initial_history {
+            InitialHistory::Resumed(resumed) => metadata::builder_from_items(
+                resumed.history.as_slice(),
+                resumed.rollout_path.as_path(),
+            ),
+            InitialHistory::New | InitialHistory::Forked(_) => None,
+        };
+
         let (conversation_id, rollout_params) = match &mut initial_history {
             InitialHistory::New | InitialHistory::Forked(_) => {
                 let conversation_id = ThreadId::default();
@@ -1233,13 +1241,6 @@ impl Session {
                     ),
                 )
             }
-        };
-        let state_builder = match &initial_history {
-            InitialHistory::Resumed(resumed) => metadata::builder_from_items(
-                resumed.history.as_slice(),
-                resumed.rollout_path.as_path(),
-            ),
-            InitialHistory::New | InitialHistory::Forked(_) => None,
         };
 
         // Kick off independent async setup tasks in parallel to reduce startup latency.
