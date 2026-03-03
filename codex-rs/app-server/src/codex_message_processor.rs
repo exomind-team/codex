@@ -3287,6 +3287,8 @@ impl CodexMessageProcessor {
             }
         };
 
+        // App-server thread resume still hands an eager `InitialHistory` into the core startup
+        // path; switch this once resume startup accepts a source-backed rollout input.
         match RolloutStore::get_rollout_history(&rollout_path).await {
             Ok(initial_history) => Some(initial_history),
             Err(err) => {
@@ -7006,6 +7008,9 @@ pub(crate) async fn read_summary_from_rollout(
 pub(crate) async fn read_rollout_items_from_rollout(
     path: &Path,
 ) -> std::io::Result<Vec<RolloutItem>> {
+    // This helper exists specifically for callers that still need owned rollout items after
+    // loading by path. When startup and downstream consumers become source-backed, they should
+    // bypass this eager conversion.
     let items = match RolloutStore::get_rollout_history(path).await? {
         InitialHistory::New => Vec::new(),
         InitialHistory::Forked(items) => items,
