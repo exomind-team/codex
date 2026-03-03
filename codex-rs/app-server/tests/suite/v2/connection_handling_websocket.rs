@@ -214,7 +214,7 @@ async fn read_error_for_id(stream: &mut WsClient, id: i64) -> Result<JSONRPCErro
     }
 }
 
-async fn read_jsonrpc_message(stream: &mut WsClient) -> Result<JSONRPCMessage> {
+pub(super) async fn read_jsonrpc_message(stream: &mut WsClient) -> Result<JSONRPCMessage> {
     loop {
         let frame = timeout(DEFAULT_READ_TIMEOUT, stream.next())
             .await
@@ -237,7 +237,7 @@ async fn read_jsonrpc_message(stream: &mut WsClient) -> Result<JSONRPCMessage> {
     }
 }
 
-async fn assert_no_message(stream: &mut WsClient, wait_for: Duration) -> Result<()> {
+pub(super) async fn assert_no_message(stream: &mut WsClient, wait_for: Duration) -> Result<()> {
     match timeout(wait_for, stream.next()).await {
         Ok(Some(Ok(frame))) => bail!("unexpected frame while waiting for silence: {frame:?}"),
         Ok(Some(Err(err))) => bail!("unexpected websocket read error: {err}"),
