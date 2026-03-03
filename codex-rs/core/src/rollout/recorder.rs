@@ -585,13 +585,7 @@ impl RolloutStore {
             } => {
                 let source = match source {
                     Some(source) => source,
-                    None => match Self::load_source(path.as_path()).await {
-                        Ok((source, _, _)) => source,
-                        Err(err) => {
-                            warn!("failed to seed rollout source from {path:?}: {err}");
-                            InMemoryRolloutSource::new(Vec::new())
-                        }
-                    },
+                    None => Self::load_source(path.as_path()).await?.0,
                 };
                 (
                     Some(
