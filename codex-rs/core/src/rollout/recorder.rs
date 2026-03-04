@@ -130,13 +130,7 @@ impl InMemoryRolloutSource {
         RolloutIndex(rollout_len - self.startup_rollout_len)
     }
 
-    /// Iterate forward from `start` using slice-style half-open range semantics.
-    ///
-    /// `-1` is the newest rollout row that already existed when this source was created. Older
-    /// persisted rows are more negative, and any rows appended after startup will be `0`, `1`,
-    /// `2`, and so on. Because `start` is a position rather than only a concrete row id, `0` is
-    /// also the exclusive end of the startup rollout suffix: on startup, iterating `[0..)` reaches
-    /// only rows appended after startup.
+    /// Iterate forward from the inclusive `start` position.
     pub(crate) fn iter_forward_from(
         &self,
         start: RolloutIndex,
@@ -157,9 +151,7 @@ impl InMemoryRolloutSource {
             })
     }
 
-    /// Iterate backward over rows strictly older than `end`, again using half-open range
-    /// semantics. On startup, `iter_reverse_from(0)` reaches the newest persisted row at `-1`,
-    /// then older rows `-2`, `-3`, and so on.
+    /// Iterate backward over rows strictly older than the exclusive `end` position.
     pub(crate) fn iter_reverse_from(
         &self,
         end: RolloutIndex,
