@@ -61,16 +61,6 @@ use codex_protocol::protocol::SessionSource;
 use codex_state::StateRuntime;
 use codex_state::ThreadMetadataBuilder;
 
-/// In-memory implementation of the `RolloutSource` used by the current eager caller.
-///
-/// When reconstruction switches to lazy on-disk loading, the equivalent source should keep the
-/// same "load older items on demand" contract, but page older rollout rows from the session file
-/// instead of cloning them out of a fully loaded `Vec<RolloutItem>`.
-///
-/// `-1` is the newest rollout row that already existed when this source was created. Older
-/// persisted rows are more negative, and any rows appended after startup will be `0`, `1`, `2`,
-/// and so on. A future file-backed source can preserve the same logical index semantics while
-/// backing them with an opaque file cursor instead of an in-memory offset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RolloutIndex(i64);
 
@@ -80,6 +70,17 @@ impl RolloutIndex {
     }
 }
 
+/// In-memory `RolloutSource` for the current startup/replay paths that still materialize the
+/// entire rollout before reconstructing history or extracting metadata.
+///
+/// When those paths switch to lazy on-disk loading, the equivalent source should keep the same
+/// "load older items on demand" contract, but page older rollout rows from the session file
+/// instead of cloning them out of a fully loaded `Vec<RolloutItem>`.
+///
+/// `-1` is the newest rollout row that already existed when this source was created. Older
+/// persisted rows are more negative, and any rows appended after startup will be `0`, `1`, `2`,
+/// and so on. A future file-backed source can preserve the same logical index semantics while
+/// backing them with an opaque file cursor instead of an in-memory offset.
 #[derive(Clone, Debug)]
 pub struct InMemoryRolloutSource {
     rollout_items: Vec<RolloutItem>,
