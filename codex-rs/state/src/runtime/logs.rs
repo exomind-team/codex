@@ -377,7 +377,11 @@ fn format_feedback_log_line(
         Some(dt) => dt.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         None => format!("{ts}.{ts_nanos:09}Z"),
     };
-    format!("{timestamp} {level:>5} {feedback_log_body}\n")
+    let mut line = format!("{timestamp} {level:>5} {feedback_log_body}");
+    if !line.ends_with('\n') {
+        line.push('\n');
+    }
+    line
 }
 
 fn push_log_filters<'a>(builder: &mut QueryBuilder<'a, Sqlite>, query: &'a LogQuery) {
@@ -458,6 +462,14 @@ mod tests {
     fn format_feedback_log_line_matches_feedback_formatter_shape() {
         assert_eq!(
             format_feedback_log_line(1, 123_456_000, "INFO", "alpha"),
+            "1970-01-01T00:00:01.123456Z  INFO alpha\n"
+        );
+    }
+
+    #[test]
+    fn format_feedback_log_line_preserves_existing_trailing_newline() {
+        assert_eq!(
+            format_feedback_log_line(1, 123_456_000, "INFO", "alpha\n"),
             "1970-01-01T00:00:01.123456Z  INFO alpha\n"
         );
     }
