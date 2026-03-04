@@ -98,11 +98,9 @@ pub(crate) async fn extract_metadata_from_rollout(
     default_provider: &str,
     otel: Option<&OtelManager>,
 ) -> anyhow::Result<ExtractionOutcome> {
-    let crate::rollout::LoadedRolloutSource {
-        source,
-        thread_id: _,
-        parse_errors,
-    } = RolloutStore::load_source(rollout_path).await?;
+    let loaded_rollout = RolloutStore::load_source(rollout_path).await?;
+    let parse_errors = loaded_rollout.parse_errors;
+    let source = loaded_rollout.source;
     let rollout_start = source.inclusive_start_of_rollout_index();
     let builder = builder_from_items(
         source

@@ -290,11 +290,8 @@ mod job {
         rollout_cwd: &Path,
         stage_one_context: &RequestContext,
     ) -> anyhow::Result<(StageOneOutput, Option<TokenUsage>)> {
-        let crate::rollout::LoadedRolloutSource {
-            source,
-            thread_id: _,
-            parse_errors: _,
-        } = RolloutStore::load_source(rollout_path).await?;
+        let loaded_rollout = RolloutStore::load_source(rollout_path).await?;
+        let source = loaded_rollout.source;
         // TODO(ccunningham): avoid serializing the whole rollout here; once this path has a
         // token-budget-aware head/tail collector, it should use `RolloutSource` forward/reverse
         // iteration to build only the sections that will survive into the stage-1 sampling
