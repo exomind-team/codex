@@ -1844,20 +1844,12 @@ impl Session {
                     if resumed_history.history.is_empty() {
                         let rollout = self.services.rollout.lock().await;
                         if let Some(rollout) = rollout.as_ref() {
-                            rollout
-                                .with_source(|source| {
-                                    (
-                                        self.reconstruct_history_from_rollout(
-                                            &turn_context,
-                                            source,
-                                        ),
-                                        Self::extract_mcp_tool_selection_from_rollout_source(
-                                            source,
-                                        ),
-                                        Self::last_token_info_from_rollout_source(source),
-                                    )
-                                })
-                                .await
+                            let source = rollout.source.lock().await;
+                            (
+                                self.reconstruct_history_from_rollout(&turn_context, &source),
+                                Self::extract_mcp_tool_selection_from_rollout_source(&source),
+                                Self::last_token_info_from_rollout_source(&source),
+                            )
                         } else {
                             let source = InMemoryRolloutSource::new(Vec::new());
                             (

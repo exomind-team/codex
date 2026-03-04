@@ -654,14 +654,6 @@ impl RolloutStore {
         self.source.lock().await.clone()
     }
 
-    pub(crate) async fn with_source<T>(
-        &self,
-        inspect: impl FnOnce(&InMemoryRolloutSource) -> T,
-    ) -> T {
-        let source = self.source.lock().await;
-        inspect(&source)
-    }
-
     pub fn state_db(&self) -> Option<StateDbHandle> {
         self.state_db.clone()
     }

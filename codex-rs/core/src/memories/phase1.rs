@@ -293,8 +293,8 @@ mod job {
         let (source, _, _) = RolloutStore::load_source(rollout_path).await?;
         // Memory extraction summarizes an arbitrary persisted rollout by path, not the active
         // in-process session state. This stage still wants the full stored transcript payload, so
-        // it intentionally flattens the loaded `RolloutSource` into raw items after going through
-        // the same rollout parsing path as reconstruction.
+        // it iterates the loaded `RolloutSource` directly after going through the same rollout
+        // parsing path as reconstruction.
         // TODO(ccunningham): avoid serializing the whole rollout here; once this path has a
         // token-budget-aware head/tail collector, it should use `RolloutSource` forward/reverse
         // iteration to build only the sections that will survive into the stage-1 sampling
