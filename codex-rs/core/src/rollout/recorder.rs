@@ -116,7 +116,7 @@ impl InMemoryRolloutSource {
         self.rollout_items
     }
 
-    /// Inclusive index of the oldest currently loaded rollout row.
+    /// Inclusive index of the start of the rollout stream.
     pub(crate) fn inclusive_start_of_rollout_index(&self) -> RolloutIndex {
         RolloutIndex(-self.startup_rollout_len)
     }
