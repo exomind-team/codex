@@ -61,6 +61,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_state::StateRuntime;
 use codex_state::ThreadMetadataBuilder;
 
+/// Logical position in the rollout stream.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RolloutIndex(i64);
 
