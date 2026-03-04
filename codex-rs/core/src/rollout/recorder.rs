@@ -61,10 +61,18 @@ use codex_protocol::protocol::SessionSource;
 use codex_state::StateRuntime;
 use codex_state::ThreadMetadataBuilder;
 
+/// Logical position in the rollout stream, using slice-style half-open range semantics.
+///
 /// `-1` is the newest rollout row that already existed when this source was created. Older
 /// persisted rows are more negative, and any rows appended after startup will be `0`, `1`, `2`,
-/// and so on. A future file-backed source can preserve the same logical index semantics while
-/// backing them with an opaque file cursor instead of an in-memory offset.
+/// and so on.
+///
+/// Because these are positions rather than only concrete row ids, `0` is also the exclusive end
+/// of the startup rollout suffix: on startup, iterating `[..0)` reaches the newest persisted row
+/// at `-1`, while iterating `[0..)` reaches only rows appended after startup.
+///
+/// A future file-backed source can preserve the same logical index semantics while backing them
+/// with an opaque file cursor instead of an in-memory offset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RolloutIndex(i64);
 
@@ -119,6 +127,7 @@ impl InMemoryRolloutSource {
         RolloutIndex(-self.startup_rollout_len)
     }
 
+    /// Exclusive end of the currently loaded rollout stream.
     pub(crate) fn end_index(&self) -> RolloutIndex {
         let rollout_len = match i64::try_from(self.rollout_items.len()) {
             Ok(len) => len,
