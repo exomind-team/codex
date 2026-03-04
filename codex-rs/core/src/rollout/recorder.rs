@@ -121,7 +121,7 @@ impl InMemoryRolloutSource {
         RolloutIndex(-self.startup_rollout_len)
     }
 
-    /// Exclusive end of the currently loaded rollout window.
+    /// Exclusive end of the rollout stream.
     pub(crate) fn exclusive_end_of_rollout_index(&self) -> RolloutIndex {
         let rollout_len = match i64::try_from(self.rollout_items.len()) {
             Ok(len) => len,
