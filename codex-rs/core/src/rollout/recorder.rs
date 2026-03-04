@@ -73,9 +73,11 @@ impl RolloutIndex {
 /// In-memory `RolloutSource` for the current startup/replay paths that still materialize the
 /// entire rollout before reconstructing history or extracting metadata.
 ///
-/// When those paths switch to lazy on-disk loading, the equivalent source should keep the same
-/// "load older items on demand" contract, but page older rollout rows from the session file
-/// instead of cloning them out of a fully loaded `Vec<RolloutItem>`.
+/// The long-term plan is to make this source lazy over the rollout file so startup and replay can
+/// support unbounded conversation history without loading the entire rollout into memory up front.
+/// When that happens, the equivalent source should keep the same "load older items on demand"
+/// contract, but page older rollout rows from disk instead of cloning them out of a fully loaded
+/// `Vec<RolloutItem>`.
 ///
 /// `-1` is the newest rollout row that already existed when this source was created. Older
 /// persisted rows are more negative, and any rows appended after startup will be `0`, `1`, `2`,
