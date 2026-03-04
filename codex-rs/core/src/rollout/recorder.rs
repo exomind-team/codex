@@ -112,12 +112,12 @@ impl InMemoryRolloutSource {
     }
 
     /// Inclusive index of the oldest currently loaded rollout row.
-    pub(crate) fn oldest_loaded_index(&self) -> RolloutIndex {
+    pub(crate) fn inclusive_start_of_rollout_index(&self) -> RolloutIndex {
         RolloutIndex(-self.startup_rollout_len)
     }
 
     /// Exclusive end of the currently loaded rollout window.
-    pub(crate) fn exclusive_end_index(&self) -> RolloutIndex {
+    pub(crate) fn exclusive_end_of_rollout_index(&self) -> RolloutIndex {
         let rollout_len = match i64::try_from(self.rollout_items.len()) {
             Ok(len) => len,
             Err(_) => panic!("rollout length should fit in i64"),
@@ -649,8 +649,7 @@ impl RolloutStore {
         self.rollout_path.as_path()
     }
 
-    #[cfg(test)]
-    async fn source_snapshot(&self) -> InMemoryRolloutSource {
+    pub(crate) async fn source_snapshot(&self) -> InMemoryRolloutSource {
         self.source.lock().await.clone()
     }
 
@@ -1198,7 +1197,7 @@ async fn resume_candidate_matches_cwd(
 
     if let Ok((source, _, _)) = RolloutStore::load_source(rollout_path).await
         && let Some(latest_turn_context_cwd) = source
-            .iter_reverse_from(source.exclusive_end_index())
+            .iter_reverse_from(source.exclusive_end_of_rollout_index())
             .find_map(|(_, item)| match item {
                 RolloutItem::TurnContext(turn_context) => Some(turn_context.cwd.as_path()),
                 RolloutItem::SessionMeta(_)

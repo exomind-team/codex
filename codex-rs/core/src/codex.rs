@@ -1844,7 +1844,7 @@ impl Session {
                     if resumed_history.history.is_empty() {
                         let rollout = self.services.rollout.lock().await;
                         if let Some(rollout) = rollout.as_ref() {
-                            let source = rollout.source.lock().await;
+                            let source = rollout.source_snapshot().await;
                             (
                                 self.reconstruct_history_from_rollout(&turn_context, &source),
                                 Self::extract_mcp_tool_selection_from_rollout_source(&source),
@@ -1984,7 +1984,7 @@ impl Session {
         source: &InMemoryRolloutSource,
     ) -> Option<TokenUsageInfo> {
         source
-            .iter_reverse_from(source.exclusive_end_index())
+            .iter_reverse_from(source.exclusive_end_of_rollout_index())
             .find_map(|(_, item)| match item {
                 RolloutItem::EventMsg(EventMsg::TokenCount(ev)) => ev.info.clone(),
                 _ => None,
@@ -1997,7 +1997,7 @@ impl Session {
         let mut search_call_ids = HashSet::new();
         let mut active_selected_tools: Option<Vec<String>> = None;
 
-        for (_, item) in source.iter_forward_from(source.oldest_loaded_index()) {
+        for (_, item) in source.iter_forward_from(source.inclusive_start_of_rollout_index()) {
             let RolloutItem::ResponseItem(response_item) = item else {
                 continue;
             };

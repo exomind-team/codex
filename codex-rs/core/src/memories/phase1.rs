@@ -297,7 +297,7 @@ mod job {
         // request.
         let rollout_contents = serialize_filtered_rollout_response_items(
             source
-                .iter_forward_from(source.oldest_loaded_index())
+                .iter_forward_from(source.inclusive_start_of_rollout_index())
                 .map(|(_, item)| item),
         )?;
 

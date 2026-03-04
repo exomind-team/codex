@@ -103,12 +103,12 @@ impl Session {
         // Default to replaying from the beginning of the rollout. If reverse replay later finds a
         // surviving compaction with `replacement_history`, it advances this start index to the
         // first rollout row after that compaction checkpoint.
-        let mut rollout_suffix_start = source.oldest_loaded_index();
+        let mut rollout_suffix_start = source.inclusive_start_of_rollout_index();
         // Reverse replay accumulates rollout items into the newest in-progress turn segment until
         // we hit its matching `TurnStarted`, at which point the segment can be finalized.
         let mut active_segment: Option<ActiveReplaySegment<'_>> = None;
 
-        for (index, item) in source.iter_reverse_from(source.exclusive_end_index()) {
+        for (index, item) in source.iter_reverse_from(source.exclusive_end_of_rollout_index()) {
             match item {
                 RolloutItem::Compacted(compacted) => {
                     let active_segment =
