@@ -357,8 +357,8 @@ impl ThreadManager {
         rollout_path: PathBuf,
         auth_manager: Arc<AuthManager>,
     ) -> CodexResult<NewThread> {
-        // Core should be the component that touches rollout files. Thread startup still expects
-        // an eager `InitialHistory`, so the rollout store materializes one here before resume.
+        // Thread startup still expects an eager `InitialHistory`, so the rollout store
+        // materializes one here before resume.
         let initial_history = RolloutStore::get_rollout_history(&rollout_path).await?;
         self.resume_thread_with_history(config, initial_history, auth_manager, false)
             .await
@@ -410,9 +410,8 @@ impl ThreadManager {
         path: PathBuf,
         persist_extended_history: bool,
     ) -> CodexResult<NewThread> {
-        // Core should be the component that touches rollout files. Fork truncation still operates
-        // on an owned `InitialHistory`, so the rollout store materializes the rollout before
-        // trimming it by user-turn boundary.
+        // Fork truncation still operates on an owned `InitialHistory`, so the rollout
+        // store materializes the rollout before trimming it by user-turn boundary.
         let history = RolloutStore::get_rollout_history(&path).await?;
         let history = truncate_before_nth_user_message(history, nth_user_message);
         Box::pin(self.state.spawn_thread(
@@ -519,9 +518,8 @@ impl ThreadManagerState {
         session_source: SessionSource,
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
     ) -> CodexResult<NewThread> {
-        // Core should be the component that touches rollout files. This follows the same eager
-        // startup boundary as `resume_thread_from_rollout`: the rollout store materializes an
-        // owned `InitialHistory` before thread startup.
+        // This follows the same eager startup boundary as `resume_thread_from_rollout`:
+        // the rollout store materializes an owned `InitialHistory` before thread startup.
         let initial_history = RolloutStore::get_rollout_history(&rollout_path).await?;
         self.spawn_thread_with_source(
             config,
