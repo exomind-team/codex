@@ -1992,7 +1992,7 @@ impl Session {
         source: &InMemoryRolloutSource,
     ) -> Option<TokenUsageInfo> {
         source
-            .iter_reverse_from(source.end_index())
+            .iter_reverse_from(source.exclusive_end_index())
             .find_map(|(_, item)| match item {
                 RolloutItem::EventMsg(EventMsg::TokenCount(ev)) => ev.info.clone(),
                 _ => None,
@@ -2005,7 +2005,7 @@ impl Session {
         let mut search_call_ids = HashSet::new();
         let mut active_selected_tools: Option<Vec<String>> = None;
 
-        for (_, item) in source.iter_forward_from(source.start_index()) {
+        for (_, item) in source.iter_forward_from(source.oldest_loaded_index()) {
             let RolloutItem::ResponseItem(response_item) = item else {
                 continue;
             };

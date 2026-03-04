@@ -99,7 +99,7 @@ pub(crate) async fn extract_metadata_from_rollout(
     otel: Option<&OtelManager>,
 ) -> anyhow::Result<ExtractionOutcome> {
     let (source, _thread_id, parse_errors) = RolloutStore::load_source(rollout_path).await?;
-    let rollout_start = source.start_index();
+    let rollout_start = source.oldest_loaded_index();
     if source.iter_forward_from(rollout_start).next().is_none() {
         return Err(anyhow::anyhow!(
             "empty session file: {}",
@@ -136,15 +136,15 @@ pub(crate) async fn extract_metadata_from_rollout(
     }
     Ok(ExtractionOutcome {
         metadata,
-        memory_mode: source.iter_reverse_from(source.end_index()).find_map(
-            |(_, item)| match item {
+        memory_mode: source
+            .iter_reverse_from(source.exclusive_end_index())
+            .find_map(|(_, item)| match item {
                 RolloutItem::SessionMeta(meta_line) => meta_line.meta.memory_mode.clone(),
                 RolloutItem::ResponseItem(_)
                 | RolloutItem::Compacted(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::EventMsg(_) => None,
-            },
-        ),
+            }),
         parse_errors,
     })
 }
