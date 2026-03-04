@@ -62,6 +62,10 @@ use codex_state::StateRuntime;
 use codex_state::ThreadMetadataBuilder;
 
 /// Logical position in the rollout stream.
+///
+/// `-1` is the newest rollout row that already existed when this source was created. Older
+/// persisted rows are more negative, and any rows appended after startup are `0`, `1`, `2`, and
+/// so on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RolloutIndex(i64);
 
