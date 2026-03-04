@@ -299,8 +299,8 @@ WHERE id IN (
     /// Query per-thread feedback logs, capped to the per-thread SQLite retention budget.
     pub async fn query_feedback_logs(&self, thread_id: &str) -> anyhow::Result<Vec<u8>> {
         let max_bytes = usize::try_from(LOG_PARTITION_SIZE_LIMIT_BYTES).unwrap_or(usize::MAX);
-        // Retention pruning already bounds the matching thread and threadless-process rows,
-        // so exact export truncation is simpler to do after formatting the lines in Rust.
+        // Bound the fetched rows in SQL first so over-retained partitions do not have to load
+        // every row into memory, then apply the exact whole-line byte cap after formatting.
         let rows = sqlx::query_as::<_, FeedbackLogRow>(
             r#"
 WITH latest_process AS (
@@ -309,21 +309,39 @@ WITH latest_process AS (
     WHERE thread_id = ? AND process_uuid IS NOT NULL
     ORDER BY ts DESC, ts_nanos DESC, id DESC
     LIMIT 1
+),
+feedback_logs AS (
+    SELECT ts, ts_nanos, level, feedback_log_body, estimated_bytes, id
+    FROM logs
+    WHERE feedback_log_body IS NOT NULL AND (
+        thread_id = ?
+        OR (
+            thread_id IS NULL
+            AND process_uuid IN (SELECT process_uuid FROM latest_process)
+        )
+    )
+),
+bounded_feedback_logs AS (
+    SELECT
+        ts,
+        ts_nanos,
+        level,
+        feedback_log_body,
+        id,
+        SUM(estimated_bytes) OVER (
+            ORDER BY ts DESC, ts_nanos DESC, id DESC
+        ) AS cumulative_estimated_bytes
+    FROM feedback_logs
 )
 SELECT ts, ts_nanos, level, feedback_log_body
-FROM logs
-WHERE feedback_log_body IS NOT NULL AND (
-    thread_id = ?
-    OR (
-        thread_id IS NULL
-        AND process_uuid IN (SELECT process_uuid FROM latest_process)
-    )
-)
+FROM bounded_feedback_logs
+WHERE cumulative_estimated_bytes <= ?
 ORDER BY ts DESC, ts_nanos DESC, id DESC
 "#,
         )
         .bind(thread_id)
         .bind(thread_id)
+        .bind(LOG_PARTITION_SIZE_LIMIT_BYTES)
         .fetch_all(self.pool.as_ref())
         .await?;
 
