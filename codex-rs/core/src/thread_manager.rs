@@ -531,7 +531,7 @@ impl ThreadManagerState {
             false,
             None,
             inherited_shell_snapshot,
-        ))
+        )
         .await
     }
 

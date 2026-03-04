@@ -63,6 +63,8 @@ use codex_state::ThreadMetadataBuilder;
 
 /// Logical position in the rollout stream.
 ///
+/// This typed wrapper keeps rollout positions distinct from raw slice offsets.
+///
 /// `-1` is the newest rollout row that already existed when this source was created. Older
 /// persisted rows are more negative, and any rows appended after startup are `0`, `1`, `2`, and
 /// so on.
@@ -70,9 +72,17 @@ use codex_state::ThreadMetadataBuilder;
 pub(crate) struct RolloutIndex(i64);
 
 impl RolloutIndex {
+    /// Return the next newer logical rollout position.
     pub(crate) fn next_newer(self) -> Self {
         Self(self.0 + 1)
     }
+}
+
+/// Parsed rollout source plus file-level metadata gathered while loading by path.
+pub(crate) struct LoadedRolloutSource {
+    pub(crate) source: InMemoryRolloutSource,
+    pub(crate) thread_id: Option<ThreadId>,
+    pub(crate) parse_errors: usize,
 }
 
 /// In-memory `RolloutSource` for the current startup/replay paths that still materialize the
@@ -90,42 +100,45 @@ pub struct InMemoryRolloutSource {
 }
 
 impl InMemoryRolloutSource {
+    /// Build an in-memory `RolloutSource` from a fully loaded rollout item stream.
     pub(crate) fn new(rollout_items: Vec<RolloutItem>) -> Self {
-        let startup_rollout_len = match i64::try_from(rollout_items.len()) {
-            Ok(len) => len,
-            Err(_) => panic!("rollout length should fit in i64"),
-        };
+        let startup_rollout_len = i64::try_from(rollout_items.len()).unwrap_or(i64::MAX);
         Self {
             rollout_items,
             startup_rollout_len,
         }
     }
 
-    pub(crate) async fn load_from_path(
-        path: &Path,
-    ) -> std::io::Result<(Self, Option<ThreadId>, usize)> {
+    /// Load a persisted rollout file into the eager in-memory `RolloutSource` used today.
+    pub(crate) async fn load_from_path(path: &Path) -> std::io::Result<LoadedRolloutSource> {
         let (items, thread_id, parse_errors) = RolloutStore::load_rollout_items(path).await?;
-        Ok((Self::new(items), thread_id, parse_errors))
+        Ok(LoadedRolloutSource {
+            source: Self::new(items),
+            thread_id,
+            parse_errors,
+        })
     }
 
+    /// Append newly recorded rollout items after startup.
     pub(crate) fn append_items(&mut self, items: Vec<RolloutItem>) {
         self.rollout_items.extend(items);
     }
 
+    /// Consume the source back into owned rollout items.
     pub(crate) fn into_items(self) -> Vec<RolloutItem> {
         self.rollout_items
     }
 
+    /// Return the inclusive index of the start of the persisted rollout file.
     pub(crate) fn inclusive_start_of_rollout_index(&self) -> RolloutIndex {
         RolloutIndex(-self.startup_rollout_len)
     }
 
+    /// Return the exclusive end index of the persisted rollout file plus any items
+    /// appended in memory after startup.
     pub(crate) fn exclusive_end_of_rollout_index(&self) -> RolloutIndex {
-        let rollout_len = match i64::try_from(self.rollout_items.len()) {
-            Ok(len) => len,
-            Err(_) => panic!("rollout length should fit in i64"),
-        };
-        RolloutIndex(rollout_len - self.startup_rollout_len)
+        let rollout_len = i64::try_from(self.rollout_items.len()).unwrap_or(i64::MAX);
+        RolloutIndex(rollout_len.saturating_sub(self.startup_rollout_len))
     }
 
     /// Iterate forward from the inclusive `start` position.
@@ -133,15 +146,12 @@ impl InMemoryRolloutSource {
         &self,
         start: RolloutIndex,
     ) -> impl Iterator<Item = (RolloutIndex, &RolloutItem)> + '_ {
-        let start = self.actual_index_from_rollout_index(start);
+        let start = self.loaded_offset_from_rollout_index(start);
         self.rollout_items[start..]
             .iter()
             .enumerate()
             .map(move |(offset, item)| {
-                let offset = match i64::try_from(offset) {
-                    Ok(offset) => offset,
-                    Err(_) => panic!("offset should fit in i64"),
-                };
+                let offset = i64::try_from(offset).unwrap_or(i64::MAX);
                 (
                     RolloutIndex(start as i64 + offset - self.startup_rollout_len),
                     item,
@@ -154,24 +164,26 @@ impl InMemoryRolloutSource {
         &self,
         end: RolloutIndex,
     ) -> impl Iterator<Item = (RolloutIndex, &RolloutItem)> + '_ {
-        let end = self.actual_index_from_rollout_index(end);
+        let end = self.loaded_offset_from_rollout_index(end);
         self.rollout_items[..end]
             .iter()
             .enumerate()
             .rev()
             .map(move |(actual_index, item)| {
-                let actual_index = match i64::try_from(actual_index) {
-                    Ok(actual_index) => actual_index,
-                    Err(_) => panic!("actual index should fit in i64"),
-                };
+                let actual_index = i64::try_from(actual_index).unwrap_or(i64::MAX);
                 (RolloutIndex(actual_index - self.startup_rollout_len), item)
             })
     }
 
-    fn actual_index_from_rollout_index(&self, rollout_index: RolloutIndex) -> usize {
-        match usize::try_from(rollout_index.0 + self.startup_rollout_len) {
-            Ok(actual_index) => actual_index,
-            Err(_) => panic!("rollout index should map to a loaded rollout row"),
+    fn loaded_offset_from_rollout_index(&self, rollout_index: RolloutIndex) -> usize {
+        let actual_index = rollout_index.0.saturating_add(self.startup_rollout_len);
+        if actual_index <= 0 {
+            return 0;
+        }
+
+        match usize::try_from(actual_index) {
+            Ok(actual_index) => actual_index.min(self.rollout_items.len()),
+            Err(_) => self.rollout_items.len(),
         }
     }
 }
@@ -196,6 +208,7 @@ pub struct RolloutStore {
     source: Arc<Mutex<InMemoryRolloutSource>>,
 }
 
+/// Parameters for creating or resuming a rollout store.
 #[derive(Clone)]
 pub enum RolloutStoreParams {
     Create {
@@ -228,6 +241,7 @@ enum RolloutCmd {
 }
 
 impl RolloutStoreParams {
+    /// Create rollout parameters for a brand-new session.
     pub fn new(
         conversation_id: ThreadId,
         forked_from_id: Option<ThreadId>,
@@ -246,6 +260,7 @@ impl RolloutStoreParams {
         }
     }
 
+    /// Create rollout parameters for resuming an existing persisted rollout.
     pub fn resume(path: PathBuf, event_persistence_mode: EventPersistenceMode) -> Self {
         Self::Resume {
             path,
@@ -254,6 +269,8 @@ impl RolloutStoreParams {
         }
     }
 
+    /// Create rollout parameters for resume when startup already has a preloaded
+    /// in-memory rollout source and should avoid reading the rollout file again.
     pub fn resume_with_source(
         path: PathBuf,
         event_persistence_mode: EventPersistenceMode,
@@ -295,9 +312,8 @@ fn sanitize_rollout_item_for_persistence(
 }
 
 impl RolloutStore {
-    pub(crate) async fn load_source(
-        path: &Path,
-    ) -> std::io::Result<(InMemoryRolloutSource, Option<ThreadId>, usize)> {
+    /// Load a persisted rollout file into the eager in-memory `RolloutSource` used today.
+    pub(crate) async fn load_source(path: &Path) -> std::io::Result<LoadedRolloutSource> {
         InMemoryRolloutSource::load_from_path(path).await
     }
 
@@ -591,7 +607,7 @@ impl RolloutStore {
             } => {
                 let source = match source {
                     Some(source) => source,
-                    None => Self::load_source(path.as_path()).await?.0,
+                    None => Self::load_source(path.as_path()).await?.source,
                 };
                 (
                     Some(
@@ -640,14 +656,17 @@ impl RolloutStore {
         })
     }
 
+    /// Return the path where this rollout is persisted.
     pub fn rollout_path(&self) -> &Path {
         self.rollout_path.as_path()
     }
 
+    /// Clone the current in-memory rollout source snapshot.
     pub(crate) async fn source_snapshot(&self) -> InMemoryRolloutSource {
         self.source.lock().await.clone()
     }
 
+    /// Return the state DB handle used for rollout reconciliation, when enabled.
     pub fn state_db(&self) -> Option<StateDbHandle> {
         self.state_db.clone()
     }
@@ -757,8 +776,13 @@ impl RolloutStore {
         Ok((items, thread_id, parse_errors))
     }
 
+    /// Load a persisted rollout file into the eager startup history shape used today.
     pub async fn get_rollout_history(path: &Path) -> std::io::Result<InitialHistory> {
-        let (source, thread_id, _parse_errors) = Self::load_source(path).await?;
+        let LoadedRolloutSource {
+            source,
+            thread_id,
+            parse_errors: _,
+        } = Self::load_source(path).await?;
         let conversation_id = thread_id
             .ok_or_else(|| IoError::other("failed to parse thread ID from rollout file"))?;
         // `InitialHistory::Resumed` still carries an owned `Vec<RolloutItem>`, so this is the
@@ -780,6 +804,7 @@ impl RolloutStore {
         }))
     }
 
+    /// Shut down the background writer after draining all previously queued work.
     pub async fn shutdown(&self) -> std::io::Result<()> {
         let (tx_done, rx_done) = oneshot::channel();
         match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
@@ -1190,7 +1215,11 @@ async fn resume_candidate_matches_cwd(
         return true;
     }
 
-    if let Ok((source, _, _)) = RolloutStore::load_source(rollout_path).await
+    if let Ok(LoadedRolloutSource {
+        source,
+        thread_id: _,
+        parse_errors: _,
+    }) = RolloutStore::load_source(rollout_path).await
         && let Some(latest_turn_context_cwd) = source
             .iter_reverse_from(source.exclusive_end_of_rollout_index())
             .find_map(|(_, item)| match item {

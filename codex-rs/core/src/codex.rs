@@ -1840,33 +1840,20 @@ impl Session {
                 }
             }
             InitialHistory::Resumed(resumed_history) => {
-                let (reconstructed_rollout, restored_tool_selection, token_info) =
-                    if resumed_history.history.is_empty() {
-                        let rollout = self.services.rollout.lock().await;
-                        if let Some(rollout) = rollout.as_ref() {
-                            let source = rollout.source_snapshot().await;
-                            (
-                                self.reconstruct_history_from_rollout(&turn_context, &source),
-                                Self::extract_mcp_tool_selection_from_rollout_source(&source),
-                                Self::last_token_info_from_rollout_source(&source),
-                            )
-                        } else {
-                            let source = InMemoryRolloutSource::new(Vec::new());
-                            (
-                                self.reconstruct_history_from_rollout(&turn_context, &source),
-                                Self::extract_mcp_tool_selection_from_rollout_source(&source),
-                                Self::last_token_info_from_rollout_source(&source),
-                            )
-                        }
-                    } else {
-                        let rollout_items = resumed_history.history;
-                        let source = InMemoryRolloutSource::new(rollout_items);
-                        (
-                            self.reconstruct_history_from_rollout(&turn_context, &source),
-                            Self::extract_mcp_tool_selection_from_rollout_source(&source),
-                            Self::last_token_info_from_rollout_source(&source),
-                        )
-                    };
+                let source = if resumed_history.history.is_empty() {
+                    let rollout = self.services.rollout.lock().await;
+                    match rollout.as_ref() {
+                        Some(rollout) => rollout.source_snapshot().await,
+                        None => InMemoryRolloutSource::new(Vec::new()),
+                    }
+                } else {
+                    InMemoryRolloutSource::new(resumed_history.history)
+                };
+                let reconstructed_rollout =
+                    self.reconstruct_history_from_rollout(&turn_context, &source);
+                let restored_tool_selection =
+                    Self::extract_mcp_tool_selection_from_rollout_source(&source);
+                let token_info = Self::last_token_info_from_rollout_source(&source);
                 let previous_turn_settings = reconstructed_rollout.previous_turn_settings.clone();
                 self.set_previous_turn_settings(previous_turn_settings.clone())
                     .await;

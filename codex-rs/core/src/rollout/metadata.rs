@@ -98,14 +98,12 @@ pub(crate) async fn extract_metadata_from_rollout(
     default_provider: &str,
     otel: Option<&OtelManager>,
 ) -> anyhow::Result<ExtractionOutcome> {
-    let (source, _thread_id, parse_errors) = RolloutStore::load_source(rollout_path).await?;
+    let crate::rollout::LoadedRolloutSource {
+        source,
+        thread_id: _,
+        parse_errors,
+    } = RolloutStore::load_source(rollout_path).await?;
     let rollout_start = source.inclusive_start_of_rollout_index();
-    if source.iter_forward_from(rollout_start).next().is_none() {
-        return Err(anyhow::anyhow!(
-            "empty session file: {}",
-            rollout_path.display()
-        ));
-    }
     let builder = builder_from_items(
         source
             .iter_forward_from(rollout_start)
