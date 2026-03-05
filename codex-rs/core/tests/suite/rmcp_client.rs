@@ -1107,7 +1107,7 @@ async fn wait_for_streamable_http_server(
                 return Ok(());
             }
             Ok(Ok(response)) => {
-                if attempts == 1 || attempts % 10 == 0 {
+                if attempts == 1 || attempts.is_multiple_of(10) {
                     eprintln!(
                         "streamable HTTP server metadata not ready yet (attempt {attempts}) at {metadata_url}: HTTP {}",
                         response.status()
@@ -1121,7 +1121,7 @@ async fn wait_for_streamable_http_server(
                 }
             }
             Ok(Err(error)) => {
-                if attempts == 1 || attempts % 10 == 0 {
+                if attempts == 1 || attempts.is_multiple_of(10) {
                     eprintln!(
                         "streamable HTTP server metadata not reachable yet (attempt {attempts}) at {metadata_url}: {error}"
                     );
