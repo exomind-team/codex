@@ -1466,7 +1466,7 @@ mod tests {
         task_a.await.expect("join task A")?;
         task_b.await.expect("join task B")?;
 
-        let actual_items = store.source_snapshot().await.into_items();
+        let actual_items = store.source.lock().await.clone().into_items();
         assert!(matches!(
             actual_items.first(),
             Some(RolloutItem::SessionMeta(_))
