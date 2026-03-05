@@ -5,6 +5,8 @@ use std::time::Duration;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
+use core_test_support::responses::ResponseMock;
+use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
@@ -16,6 +18,47 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use regex_lite::Regex;
 use serde_json::json;
+use tokio::time::Instant;
+use tokio::time::sleep;
+
+async fn wait_for_responses_request_count_to_stabilize(
+    response_mock: &ResponseMock,
+    expected_count: usize,
+    timeout: Duration,
+    settle_duration: Duration,
+) -> Vec<ResponsesRequest> {
+    let deadline = Instant::now() + timeout;
+    let mut stable_since: Option<Instant> = None;
+    let mut last_count = 0;
+
+    loop {
+        let requests = response_mock.requests();
+        let request_count = requests.len();
+        last_count = request_count;
+
+        if request_count > expected_count {
+            panic!("expected at most {expected_count} responses requests, got {request_count}");
+        }
+
+        if request_count == expected_count {
+            match stable_since {
+                Some(stable_since) if stable_since.elapsed() >= settle_duration => {
+                    return requests;
+                }
+                Some(_) => {}
+                None => stable_since = Some(Instant::now()),
+            }
+        } else {
+            stable_since = None;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {expected_count} responses requests; last count was {last_count}"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+}
 
 /// Integration test: spawn a long‑running shell_command tool via a mocked Responses SSE
 /// function call, then interrupt the session and expect TurnAborted.
@@ -62,6 +105,9 @@ async fn interrupt_long_running_tool_emits_turn_aborted() {
 
     // Expect TurnAborted soon after.
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await;
+
+    codex.submit(Op::Shutdown).await.unwrap();
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 }
 
 /// After an interrupt we expect the next request to the model to include both
@@ -129,7 +175,13 @@ async fn interrupt_tool_records_history_entries() {
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let requests = response_mock.requests();
+    let requests = wait_for_responses_request_count_to_stabilize(
+        &response_mock,
+        2,
+        Duration::from_secs(2),
+        Duration::from_millis(100),
+    )
+    .await;
     assert!(
         requests.len() == 2,
         "expected two calls to the responses API, got {}",
@@ -162,6 +214,9 @@ async fn interrupt_tool_records_history_entries() {
         secs >= 0.1,
         "expected at least one tenth of a second of elapsed time, got {secs}"
     );
+
+    codex.submit(Op::Shutdown).await.unwrap();
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 }
 
 /// After an interrupt we persist a model-visible `<turn_aborted>` marker in the conversation
@@ -227,7 +282,13 @@ async fn interrupt_persists_turn_aborted_marker_in_next_request() {
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let requests = response_mock.requests();
+    let requests = wait_for_responses_request_count_to_stabilize(
+        &response_mock,
+        2,
+        Duration::from_secs(2),
+        Duration::from_millis(100),
+    )
+    .await;
     assert_eq!(requests.len(), 2, "expected two calls to the responses API");
 
     let follow_up_request = &requests[1];
@@ -238,6 +299,9 @@ async fn interrupt_persists_turn_aborted_marker_in_next_request() {
             .any(|text| text.contains("<turn_aborted>")),
         "expected <turn_aborted> marker in follow-up request"
     );
+
+    codex.submit(Op::Shutdown).await.unwrap();
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 }
 
 /// Interrupting a turn while a tool-produced follow-up is pending must not
@@ -286,12 +350,19 @@ async fn interrupt_does_not_issue_follow_up_request() {
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let requests = response_mock.requests();
+    let requests = wait_for_responses_request_count_to_stabilize(
+        &response_mock,
+        1,
+        Duration::from_secs(2),
+        Duration::from_millis(200),
+    )
+    .await;
     assert_eq!(
         requests.len(),
         1,
         "interrupt should not issue a follow-up responses request"
     );
+
+    codex.submit(Op::Shutdown).await.unwrap();
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 }
