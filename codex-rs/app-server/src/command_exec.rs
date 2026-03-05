@@ -721,12 +721,17 @@ mod tests {
     use codex_protocol::protocol::ReadOnlyAccess;
     use codex_protocol::protocol::SandboxPolicy;
     use pretty_assertions::assert_eq;
+    #[cfg(not(target_os = "windows"))]
     use tokio::time::Duration;
+    #[cfg(not(target_os = "windows"))]
     use tokio::time::timeout;
+    #[cfg(not(target_os = "windows"))]
     use tokio_util::sync::CancellationToken;
 
     use super::*;
+    #[cfg(not(target_os = "windows"))]
     use crate::outgoing_message::OutgoingEnvelope;
+    #[cfg(not(target_os = "windows"))]
     use crate::outgoing_message::OutgoingMessage;
 
     fn windows_sandbox_exec_request() -> ExecRequest {
