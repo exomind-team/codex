@@ -661,11 +661,6 @@ impl RolloutStore {
         self.rollout_path.as_path()
     }
 
-    /// Clone the current in-memory rollout source snapshot.
-    pub(crate) async fn source_snapshot(&self) -> InMemoryRolloutSource {
-        self.source.lock().await.clone()
-    }
-
     /// Return the state DB handle used for rollout reconciliation, when enabled.
     pub fn state_db(&self) -> Option<StateDbHandle> {
         self.state_db.clone()
