@@ -155,7 +155,7 @@ async fn turn_start_shell_zsh_fork_executes_command_v2() -> Result<()> {
     assert_eq!(status, CommandExecutionStatus::InProgress);
     assert!(command.starts_with(&zsh_path.display().to_string()));
     assert!(command.contains("/bin/sh -c"));
-    assert!(command.contains("while [ ! -f"));
+    assert!(command.contains("sleep 0.01"));
     assert!(command.contains(&release_marker.display().to_string()));
     assert_eq!(cwd, workspace);
 
