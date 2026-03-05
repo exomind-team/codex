@@ -855,6 +855,7 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
 }
 
 #[test]
+#[serial(mcp_test_value)]
 fn streamable_http_with_oauth_round_trip() -> anyhow::Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -937,6 +938,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
         .await?;
 
     let temp_home = Arc::new(tempdir()?);
+    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", temp_home.path().as_os_str());
     write_fallback_oauth_tokens(
         temp_home.path(),
         server_name,
