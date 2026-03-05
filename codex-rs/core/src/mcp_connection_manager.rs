@@ -395,6 +395,7 @@ struct AsyncManagedClient {
 }
 
 impl AsyncManagedClient {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         server_name: String,
         config: McpServerConfig,
