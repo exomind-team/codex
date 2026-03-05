@@ -205,7 +205,7 @@ pub struct RolloutStore {
     // Canonical in-memory `RolloutSource` for this process. Startup loading and runtime appends
     // both feed this one `RolloutSource` so replay does not need to reconcile separate disk and
     // memory views.
-    source: Arc<Mutex<InMemoryRolloutSource>>,
+    pub(crate) source: Arc<Mutex<InMemoryRolloutSource>>,
 }
 
 /// Parameters for creating or resuming a rollout store.
