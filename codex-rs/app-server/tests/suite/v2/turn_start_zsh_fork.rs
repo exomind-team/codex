@@ -54,6 +54,7 @@ async fn turn_start_shell_zsh_fork_executes_command_v2() -> Result<()> {
     std::fs::create_dir(&codex_home)?;
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir(&workspace)?;
+    let release_marker = workspace.join("interrupt-release");
 
     let Some(zsh_path) = find_test_zsh_path()? else {
         eprintln!("skipping zsh fork test: no zsh executable found");
@@ -61,8 +62,15 @@ async fn turn_start_shell_zsh_fork_executes_command_v2() -> Result<()> {
     };
     eprintln!("using zsh path for zsh-fork test: {}", zsh_path.display());
 
+    // Keep the shell command in flight until we interrupt it. A fast command
+    // like `echo hi` can finish before the interrupt arrives on faster runners,
+    // which turns this into a test for post-command follow-up behavior instead
+    // of interrupting an active zsh-fork command.
+    let release_marker_escaped = release_marker.to_string_lossy().replace('\'', r#"'\''"#);
+    let wait_for_interrupt =
+        format!("while [ ! -f '{release_marker_escaped}' ]; do sleep 0.01; done");
     let responses = vec![create_shell_command_sse_response(
-        vec!["echo".to_string(), "hi".to_string()],
+        vec!["/bin/sh".to_string(), "-c".to_string(), wait_for_interrupt],
         None,
         Some(5000),
         "call-zsh-fork",
@@ -146,7 +154,9 @@ async fn turn_start_shell_zsh_fork_executes_command_v2() -> Result<()> {
     assert_eq!(id, "call-zsh-fork");
     assert_eq!(status, CommandExecutionStatus::InProgress);
     assert!(command.starts_with(&zsh_path.display().to_string()));
-    assert!(command.contains(" -lc 'echo hi'"));
+    assert!(command.contains("/bin/sh -c"));
+    assert!(command.contains("while [ ! -f"));
+    assert!(command.contains(&release_marker.display().to_string()));
     assert_eq!(cwd, workspace);
 
     mcp.interrupt_turn_and_wait_for_aborted(thread.id, turn.id, DEFAULT_READ_TIMEOUT)
