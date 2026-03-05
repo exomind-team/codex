@@ -29,12 +29,10 @@ async fn wait_for_responses_request_count_to_stabilize(
 ) -> Vec<ResponsesRequest> {
     let deadline = Instant::now() + timeout;
     let mut stable_since: Option<Instant> = None;
-    let mut last_count = 0;
 
     loop {
         let requests = response_mock.requests();
         let request_count = requests.len();
-        last_count = request_count;
 
         if request_count > expected_count {
             panic!("expected at most {expected_count} responses requests, got {request_count}");
@@ -54,7 +52,7 @@ async fn wait_for_responses_request_count_to_stabilize(
 
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for {expected_count} responses requests; last count was {last_count}"
+            "timed out waiting for {expected_count} responses requests; last count was {request_count}"
         );
         sleep(Duration::from_millis(10)).await;
     }
