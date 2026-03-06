@@ -14,15 +14,18 @@ Make `exomind-team/codex` buildable and usable on Android Termux (ARM64) without
 ## Scope
 
 1. Runtime compatibility for Termux:
+
 - login browser open path (`termux-open-url`)
 - update version parsing for termux suffix
 - update command routing for termux package line
 
 2. Build/package compatibility for Termux:
+
 - Android target compile path (`aarch64-linux-android`)
 - Termux runtime launcher/dynamic library handling
 
 3. Keep cross-platform safety:
+
 - no behavior change for Windows/Linux default path
 - keep current `@openai/codex` update/install path outside Termux
 
@@ -37,8 +40,10 @@ Make `exomind-team/codex` buildable and usable on Android Termux (ARM64) without
 
 1. Add Android build checks and preflight script (this branch).
 2. Port minimal runtime patches from `codex-termux`:
+
 - `codex-rs/login/src/server.rs`
 - `codex-rs/tui/src/updates.rs`
 - `codex-rs/tui/src/update_action.rs`
+
 3. Add targeted tests for version parsing and update action selection.
 4. Define packaging strategy for Termux release line.
