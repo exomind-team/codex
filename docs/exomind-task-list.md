@@ -109,3 +109,6 @@
 - [x] `rust-ci.yml` 修复：`CI results (required)` 按 upstream/fork 分流判定
 - [x] `bazel.yml` 修复：实验 Bazel 仅 upstream 执行，避免 fork runner 不可用导致红灯
 - [x] 本轮编译检查：`cargo check -p codex-hooks` 通过
+- [x] `fork_smoke` 修复：TUI 持续消息颜色从 `yellow` 调整为 `magenta`，消除 clippy 限制触发
+- [x] `build-test` 修复：格式化 7 个 `docs/exomind-*.md`，通过 Prettier 校验
+- [x] `PR #17` 检查通过：`Fork smoke` 与 `CI results (required)` 全绿
