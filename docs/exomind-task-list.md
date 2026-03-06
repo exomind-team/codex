@@ -87,3 +87,11 @@
 ## L. 运行环境基线（本轮）
 - [x] 构建产物目录统一到 G 盘：`G:/cargo-target`
 - [x] 同步更新 issue `#1` 与 `#3` 的需求快照和执行状态
+
+## M. CI 稳定性修复（本轮）
+- [x] 远程同步：`origin/main` 与 `upstream/main` 进展拉取并确认分叉差异
+- [x] `ci.yml` 修复：fork 场景跳过 `Stage npm package`（仅 upstream 执行）
+- [x] `rust-ci.yml` 修复：upstream 保留全矩阵，fork 走 `fork_smoke`（clippy + nextest）
+- [x] `rust-ci.yml` 修复：`CI results (required)` 按 upstream/fork 分流判定
+- [x] `bazel.yml` 修复：实验 Bazel 仅 upstream 执行，避免 fork runner 不可用导致红灯
+- [x] 本轮编译检查：`cargo check -p codex-hooks` 通过
