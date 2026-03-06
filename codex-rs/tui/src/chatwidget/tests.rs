@@ -838,7 +838,7 @@ async fn enter_with_only_remote_images_submits_user_turn() {
 }
 
 #[tokio::test]
-async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
+async fn shift_tab_with_only_remote_images_does_not_submit_user_turn() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
 
     let conversation_id = ThreadId::new();
@@ -870,7 +870,7 @@ async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
     chat.set_remote_image_urls(vec![remote_url.clone()]);
     assert_eq!(chat.bottom_pane.composer_text(), "");
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
 
     assert_no_submit_op(&mut op_rx);
     assert_eq!(chat.remote_image_urls(), vec![remote_url]);
@@ -5158,33 +5158,14 @@ async fn collab_mode_shift_tab_cycles_only_when_idle() {
 }
 
 #[tokio::test]
-async fn collab_mode_shift_enter_cycles_only_when_idle_and_empty_composer() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
-
-    let initial = chat.current_collaboration_mode().clone();
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
-    assert_eq!(chat.current_collaboration_mode(), &initial);
-
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
-    assert_eq!(chat.current_collaboration_mode(), &initial);
-
-    chat.on_task_started();
-    let before = chat.active_collaboration_mode_kind();
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
-    assert_eq!(chat.active_collaboration_mode_kind(), before);
-}
-
-#[tokio::test]
-async fn shift_enter_buffers_repeating_message_when_composer_has_input() {
+async fn shift_tab_buffers_repeating_message_when_composer_has_input() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let before = chat.active_collaboration_mode_kind();
     chat.set_queue_autosend_suppressed(true);
     chat.bottom_pane
         .set_composer_text("buffer me".to_string(), Vec::new(), Vec::new());
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
 
     assert_eq!(chat.active_collaboration_mode_kind(), before);
     assert!(chat.bottom_pane.composer_text().is_empty());
