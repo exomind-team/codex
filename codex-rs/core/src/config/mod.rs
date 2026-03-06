@@ -66,7 +66,10 @@ use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::Verbosity;
+use codex_protocol::config_types::WebSearchConfig;
+use codex_protocol::config_types::WebSearchFilters;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WebSearchUserLocation;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::MacOsSeatbeltProfileExtensions;
 use codex_protocol::openai_models::ModelsResponse;
@@ -467,6 +470,9 @@ pub struct Config {
 
     /// Explicit or feature-derived web search mode.
     pub web_search_mode: Constrained<WebSearchMode>,
+
+    /// Additional parameters for the web search tool when it is enabled.
+    pub web_search_config: Option<WebSearchConfig>,
 
     /// If set to `true`, used only the experimental unified exec tool.
     pub use_experimental_unified_exec_tool: bool,
@@ -1219,6 +1225,9 @@ pub struct ConfigToml {
     /// Controls the web search tool mode: disabled, cached, or live.
     pub web_search: Option<WebSearchMode>,
 
+    /// Optional structured configuration for the web search tool.
+    pub web_search_config: Option<WebSearchConfig>,
+
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
 
@@ -1640,6 +1649,60 @@ fn resolve_web_search_mode(
     None
 }
 
+fn resolve_web_search_config(
+    config_toml: &ConfigToml,
+    config_profile: &ConfigProfile,
+) -> Option<WebSearchConfig> {
+    let base = config_toml.web_search_config.as_ref();
+    let profile = config_profile.web_search_config.as_ref();
+
+    match (base, profile) {
+        (None, None) => None,
+        (Some(base), None) => Some(base.clone()),
+        (None, Some(profile)) => Some(profile.clone()),
+        (Some(base), Some(profile)) => Some(WebSearchConfig {
+            filters: match (base.filters.as_ref(), profile.filters.as_ref()) {
+                (None, None) => None,
+                (Some(base_filters), None) => Some(base_filters.clone()),
+                (None, Some(profile_filters)) => Some(profile_filters.clone()),
+                (Some(base_filters), Some(profile_filters)) => Some(WebSearchFilters {
+                    allowed_domains: profile_filters
+                        .allowed_domains
+                        .clone()
+                        .or_else(|| base_filters.allowed_domains.clone()),
+                }),
+            },
+            user_location: match (base.user_location.as_ref(), profile.user_location.as_ref()) {
+                (None, None) => None,
+                (Some(base_user_location), None) => Some(base_user_location.clone()),
+                (None, Some(profile_user_location)) => Some(profile_user_location.clone()),
+                (Some(base_user_location), Some(profile_user_location)) => {
+                    Some(WebSearchUserLocation {
+                        r#type: profile_user_location.r#type,
+                        country: profile_user_location
+                            .country
+                            .clone()
+                            .or_else(|| base_user_location.country.clone()),
+                        region: profile_user_location
+                            .region
+                            .clone()
+                            .or_else(|| base_user_location.region.clone()),
+                        city: profile_user_location
+                            .city
+                            .clone()
+                            .or_else(|| base_user_location.city.clone()),
+                        timezone: profile_user_location
+                            .timezone
+                            .clone()
+                            .or_else(|| base_user_location.timezone.clone()),
+                    })
+                }
+            },
+            search_context_size: profile.search_context_size.or(base.search_context_size),
+        }),
+    }
+}
+
 pub(crate) fn resolve_web_search_mode_for_turn(
     web_search_mode: &Constrained<WebSearchMode>,
     sandbox_policy: &SandboxPolicy,
@@ -1847,6 +1910,7 @@ impl Config {
         }
         let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features)
             .unwrap_or(WebSearchMode::Cached);
+        let web_search_config = resolve_web_search_config(&cfg, &config_profile);
         // TODO(dylan): We should be able to leverage ConfigLayerStack so that
         // we can reliably check this at every config level.
         let did_user_set_custom_approval_policy_or_sandbox_mode =
@@ -2240,6 +2304,7 @@ impl Config {
             forced_login_method,
             include_apply_patch_tool: include_apply_patch_tool_flag,
             web_search_mode: constrained_web_search_mode.value,
+            web_search_config,
             use_experimental_unified_exec_tool,
             background_terminal_max_timeout,
             ghost_snapshot,
@@ -5248,6 +5313,7 @@ model_verbosity = "high"
                 forced_login_method: None,
                 include_apply_patch_tool: false,
                 web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
+                web_search_config: None,
                 use_experimental_unified_exec_tool: !cfg!(windows),
                 background_terminal_max_timeout: DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
                 ghost_snapshot: GhostSnapshotConfig::default(),
@@ -5378,6 +5444,7 @@ model_verbosity = "high"
             forced_login_method: None,
             include_apply_patch_tool: false,
             web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
+            web_search_config: None,
             use_experimental_unified_exec_tool: !cfg!(windows),
             background_terminal_max_timeout: DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
             ghost_snapshot: GhostSnapshotConfig::default(),
@@ -5506,6 +5573,7 @@ model_verbosity = "high"
             forced_login_method: None,
             include_apply_patch_tool: false,
             web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
+            web_search_config: None,
             use_experimental_unified_exec_tool: !cfg!(windows),
             background_terminal_max_timeout: DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
             ghost_snapshot: GhostSnapshotConfig::default(),
@@ -5620,6 +5688,7 @@ model_verbosity = "high"
             forced_login_method: None,
             include_apply_patch_tool: false,
             web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
+            web_search_config: None,
             use_experimental_unified_exec_tool: !cfg!(windows),
             background_terminal_max_timeout: DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
             ghost_snapshot: GhostSnapshotConfig::default(),
