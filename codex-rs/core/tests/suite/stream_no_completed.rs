@@ -17,7 +17,7 @@ use core_test_support::wait_for_event;
 
 fn sse_incomplete() -> String {
     let fixture = find_resource!("tests/fixtures/incomplete_sse.json")
-        .expect("failed to resolve incomplete_sse fixture");
+        .unwrap_or_else(|err| panic!("failed to resolve incomplete_sse fixture: {err}"));
     load_sse_fixture(fixture)
 }
 
@@ -27,7 +27,7 @@ async fn retries_on_early_close() {
 
     let incomplete_sse = sse_incomplete();
     let completed_sse_fixture = find_resource!("tests/fixtures/completed_hello.json")
-        .expect("failed to resolve completed_hello fixture");
+        .unwrap_or_else(|err| panic!("failed to resolve completed_hello fixture: {err}"));
     let completed_sse = load_sse_fixture(completed_sse_fixture);
 
     let (server, _) = start_streaming_sse_server(vec![
