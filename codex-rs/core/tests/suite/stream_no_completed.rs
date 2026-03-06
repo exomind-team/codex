@@ -22,14 +22,17 @@ fn sse_incomplete() -> String {
 async fn retries_on_early_close() {
     skip_if_no_network!();
 
+    let incomplete_sse = sse_incomplete();
+    let completed_sse = load_sse_fixture("tests/fixtures/completed_hello.json");
+
     let (server, _) = start_streaming_sse_server(vec![
         vec![StreamingSseChunk {
             gate: None,
-            body: sse_incomplete(),
+            body: incomplete_sse,
         }],
         vec![StreamingSseChunk {
             gate: None,
-            body: load_sse_fixture("tests/fixtures/completed_hello.json"),
+            body: completed_sse,
         }],
     ])
     .await;
@@ -62,7 +65,7 @@ async fn retries_on_early_close() {
         .with_config(move |config| {
             config.model_provider = model_provider;
         })
-        .build(&server)
+        .build_with_streaming_server(&server)
         .await
         .unwrap();
 
