@@ -8,6 +8,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use codex_utils_cargo_bin::find_resource;
 use core_test_support::load_sse_fixture;
+use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
@@ -26,9 +27,7 @@ async fn retries_on_early_close() {
     skip_if_no_network!();
 
     let incomplete_sse = sse_incomplete();
-    let completed_sse_fixture = find_resource!("tests/fixtures/completed_hello.json")
-        .unwrap_or_else(|err| panic!("failed to resolve completed_hello fixture: {err}"));
-    let completed_sse = load_sse_fixture(completed_sse_fixture);
+    let completed_sse = responses::sse_completed("resp_ok");
 
     let (server, _) = start_streaming_sse_server(vec![
         vec![StreamingSseChunk {
