@@ -175,17 +175,8 @@ fn default_test_overrides() -> ConfigOverrides {
 /// makes it trivial to extend the fixtures as OpenAI adds new event kinds or
 /// fields.
 pub fn load_sse_fixture(path: impl AsRef<std::path::Path>) -> String {
-    let path = path.as_ref();
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        codex_utils_cargo_bin::repo_root()
-            .expect("resolve repo root for SSE fixture")
-            .join("codex-rs/core")
-            .join(path)
-    };
     let events: Vec<serde_json::Value> =
-        serde_json::from_reader(std::fs::File::open(&path).expect("read fixture"))
+        serde_json::from_reader(std::fs::File::open(path).expect("read fixture"))
             .expect("parse JSON fixture");
     events
         .into_iter()

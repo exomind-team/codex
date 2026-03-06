@@ -6,6 +6,7 @@ use codex_core::WireApi;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
+use codex_utils_cargo_bin::find_resource;
 use core_test_support::load_sse_fixture;
 use core_test_support::skip_if_no_network;
 use core_test_support::streaming_sse::StreamingSseChunk;
@@ -15,7 +16,9 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 
 fn sse_incomplete() -> String {
-    load_sse_fixture("tests/fixtures/incomplete_sse.json")
+    let fixture = find_resource!("tests/fixtures/incomplete_sse.json")
+        .expect("failed to resolve incomplete_sse fixture");
+    load_sse_fixture(fixture)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -23,7 +26,9 @@ async fn retries_on_early_close() {
     skip_if_no_network!();
 
     let incomplete_sse = sse_incomplete();
-    let completed_sse = load_sse_fixture("tests/fixtures/completed_hello.json");
+    let completed_sse_fixture = find_resource!("tests/fixtures/completed_hello.json")
+        .expect("failed to resolve completed_hello fixture");
+    let completed_sse = load_sse_fixture(completed_sse_fixture);
 
     let (server, _) = start_streaming_sse_server(vec![
         vec![StreamingSseChunk {
