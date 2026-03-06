@@ -84,6 +84,67 @@ async fn command_exec_without_streams_can_be_terminated() -> Result<()> {
 }
 
 #[tokio::test]
+async fn command_exec_post_exit_control_requests_fail_without_waiting_for_drain() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), "never")?;
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let process_id = "post-exit-1".to_string();
+    let command_request_id = mcp
+        .send_command_exec_request(CommandExecParams {
+            command: vec!["sh".to_string(), "-lc".to_string(), "sleep 5 &".to_string()],
+            process_id: Some(process_id.clone()),
+            tty: false,
+            stream_stdin: false,
+            stream_stdout_stderr: false,
+            output_bytes_cap: None,
+            disable_output_cap: false,
+            disable_timeout: false,
+            timeout_ms: None,
+            cwd: None,
+            env: None,
+            size: None,
+            sandbox_policy: None,
+        })
+        .await?;
+
+    assert!(
+        timeout(
+            Duration::from_millis(100),
+            mcp.read_stream_until_response_message(RequestId::Integer(command_request_id)),
+        )
+        .await
+        .is_err(),
+        "response should stay pending while inherited stdio keeps the drain open",
+    );
+
+    let terminate_request_id = mcp
+        .send_command_exec_terminate_request(CommandExecTerminateParams { process_id })
+        .await?;
+    let terminate_error = timeout(
+        Duration::from_millis(500),
+        mcp.read_stream_until_error_message(RequestId::Integer(terminate_request_id)),
+    )
+    .await??;
+    assert_eq!(
+        terminate_error.error.message,
+        "command/exec \"post-exit-1\" is no longer running"
+    );
+
+    let response = mcp
+        .read_stream_until_response_message(RequestId::Integer(command_request_id))
+        .await?;
+    let response: CommandExecResponse = to_response(response)?;
+    assert_eq!(response.exit_code, 0);
+    assert_eq!(response.stdout, "");
+    assert_eq!(response.stderr, "");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn command_exec_without_process_id_keeps_buffered_compatibility() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
     let codex_home = TempDir::new()?;
