@@ -2792,6 +2792,14 @@ impl ChatComposer {
                 self.handle_buffered_submission(BufferedQueuePriority::Normal)
             }
             KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::SHIFT,
+                kind: KeyEventKind::Press,
+                ..
+            } if !self.is_bang_shell_command() => {
+                self.handle_buffered_submission(BufferedQueuePriority::Normal)
+            }
+            KeyEvent {
                 code: KeyCode::Tab,
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
@@ -6982,6 +6990,38 @@ mod tests {
         type_chars_humanlike(&mut composer, &['h', 'i']);
 
         let (result, _needs_redraw) = composer.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+
+        assert!(matches!(
+            result,
+            InputResult::BufferedQueued {
+                ref text,
+                priority: BufferedQueuePriority::Normal,
+                ..
+            } if text == "hi"
+        ));
+        assert!(composer.textarea.is_empty());
+    }
+
+    #[test]
+    fn shift_enter_buffers_message_with_normal_priority() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        type_chars_humanlike(&mut composer, &['h', 'i']);
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
 
         assert!(matches!(
             result,
