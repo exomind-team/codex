@@ -3,7 +3,7 @@ use anyhow::Result;
 use codex_app_server_protocol::GenerateTsOptions;
 use codex_app_server_protocol::generate_json_with_experimental;
 use codex_app_server_protocol::generate_ts_with_options;
-use codex_app_server_protocol::read_schema_fixture_tree;
+use codex_app_server_protocol::read_schema_fixture_subtree;
 use similar::TextDiff;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -45,9 +45,6 @@ fn assert_schema_fixtures_match_generated(
     );
 
     let temp_dir = tempfile::tempdir().context("create temp dir")?;
-    std::fs::create_dir_all(temp_dir.path().join("typescript"))
-        .context("create generated TypeScript dir")?;
-    std::fs::create_dir_all(temp_dir.path().join("json")).context("create generated JSON dir")?;
     let generate_start = Instant::now();
     let generated_root = temp_dir.path().join(label);
     generate(&generated_root).with_context(|| {
@@ -154,15 +151,10 @@ fn schema_root() -> Result<PathBuf> {
 }
 
 fn read_tree(root: &Path, label: &str) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
-    let label_path = Path::new(label);
-    let tree = read_schema_fixture_tree(root).context("read schema fixture tree")?;
-    let filtered = tree
-        .into_iter()
-        .filter_map(|(path, bytes)| {
-            path.strip_prefix(label_path)
-                .ok()
-                .map(|relative| (relative.to_path_buf(), bytes))
-        })
-        .collect::<BTreeMap<PathBuf, Vec<u8>>>();
-    Ok(filtered)
+    read_schema_fixture_subtree(root, label).with_context(|| {
+        format!(
+            "read {label} schema fixture subtree from {}",
+            root.display()
+        )
+    })
 }
