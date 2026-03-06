@@ -813,6 +813,11 @@ fn is_cycle_mode_or_repeat_queue_key(key_event: KeyEvent) -> bool {
             code: KeyCode::BackTab,
             kind: KeyEventKind::Press,
             ..
+        } | KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            ..
         }
     )
 }

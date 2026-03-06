@@ -5158,6 +5158,25 @@ async fn collab_mode_shift_tab_cycles_only_when_idle() {
 }
 
 #[tokio::test]
+async fn collab_mode_shift_tab_cycles_only_when_idle_for_tab_plus_shift_encoding() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    let initial = chat.current_collaboration_mode().clone();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    assert_eq!(chat.current_collaboration_mode(), &initial);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
+    assert_eq!(chat.current_collaboration_mode(), &initial);
+
+    chat.on_task_started();
+    let before = chat.active_collaboration_mode_kind();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
+    assert_eq!(chat.active_collaboration_mode_kind(), before);
+}
+
+#[tokio::test]
 async fn shift_tab_buffers_repeating_message_when_composer_has_input() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let before = chat.active_collaboration_mode_kind();
@@ -5166,6 +5185,28 @@ async fn shift_tab_buffers_repeating_message_when_composer_has_input() {
         .set_composer_text("buffer me".to_string(), Vec::new(), Vec::new());
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+
+    assert_eq!(chat.active_collaboration_mode_kind(), before);
+    assert!(chat.bottom_pane.composer_text().is_empty());
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    let queued = chat
+        .queued_user_messages
+        .front()
+        .expect("expected one queued message");
+    assert_eq!(queued.text, "buffer me");
+    assert!(queued.repeat_mode);
+    assert!(!queued.steer_mode);
+}
+
+#[tokio::test]
+async fn shift_tab_buffers_repeating_message_for_tab_plus_shift_encoding() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let before = chat.active_collaboration_mode_kind();
+    chat.set_queue_autosend_suppressed(true);
+    chat.bottom_pane
+        .set_composer_text("buffer me".to_string(), Vec::new(), Vec::new());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
 
     assert_eq!(chat.active_collaboration_mode_kind(), before);
     assert!(chat.bottom_pane.composer_text().is_empty());
