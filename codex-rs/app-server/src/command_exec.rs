@@ -848,16 +848,15 @@ mod tests {
     use codex_protocol::config_types::WindowsSandboxLevel;
     use codex_protocol::protocol::ReadOnlyAccess;
     use codex_protocol::protocol::SandboxPolicy;
+    use codex_utils_cargo_bin::cargo_bin;
+    use codex_utils_pty::pipe::PipeStdinMode;
     use pretty_assertions::assert_eq;
     use tokio::time::Duration;
     use tokio::time::timeout;
-    #[cfg(not(target_os = "windows"))]
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    #[cfg(not(target_os = "windows"))]
     use crate::outgoing_message::OutgoingEnvelope;
-    #[cfg(not(target_os = "windows"))]
     use crate::outgoing_message::OutgoingMessage;
 
     fn test_outgoing() -> Arc<OutgoingMessageSender> {
@@ -1277,5 +1276,88 @@ mod tests {
 
         drop(process_exited_tx);
         assert_eq!(output, "");
+    }
+
+    #[tokio::test]
+    async fn run_command_closes_control_channel_before_sending_drained_response() {
+        let helper = cargo_bin("codex-app-server-command-exec-test-helper")
+            .expect("should find command_exec test helper");
+        let (output_sink, stdout_rx, stderr_rx) = OutputSink::guaranteed_separate();
+        let spawned = codex_utils_pty::pipe::spawn_streaming_process(
+            &helper.to_string_lossy(),
+            &Vec::new(),
+            PathBuf::from(".").as_path(),
+            &HashMap::new(),
+            &None,
+            PipeStdinMode::Null,
+            output_sink,
+        )
+        .await
+        .expect("helper process should spawn");
+        let (control_tx, control_rx) = mpsc::channel(4);
+        let (tx, mut rx) = mpsc::channel(4);
+        let request_id = ConnectionRequestId {
+            connection_id: ConnectionId(24),
+            request_id: codex_app_server_protocol::RequestId::Integer(4),
+        };
+
+        let run_task = tokio::spawn(run_command(RunCommandParams {
+            outgoing: Arc::new(OutgoingMessageSender::new(tx)),
+            request_id: request_id.clone(),
+            process_id: Some("proc-24".to_string()),
+            spawned,
+            stdout_rx,
+            stderr_rx,
+            control_rx,
+            stream_stdin: false,
+            stream_stdout_stderr: false,
+            expiration: ExecExpiration::DefaultTimeout,
+            output_bytes_cap: None,
+        }));
+
+        timeout(Duration::from_secs(1), control_tx.closed())
+            .await
+            .expect("control receiver should close after process exit");
+        assert!(
+            timeout(Duration::from_millis(10), rx.recv()).await.is_err(),
+            "response should remain pending while tail output drains",
+        );
+        let (response_tx, _response_rx) = oneshot::channel();
+        let send_result = control_tx
+            .send(CommandControlRequest {
+                control: CommandControl::Terminate,
+                response_tx: Some(response_tx),
+            })
+            .await;
+        assert!(send_result.is_err(), "post-exit control send should fail");
+
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for drained response")
+            .expect("outgoing channel closed before response");
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+        } = envelope
+        else {
+            panic!("expected connection-scoped outgoing message");
+        };
+        assert_eq!(connection_id, request_id.connection_id);
+        let OutgoingMessage::Response(response) = message else {
+            panic!("expected command/exec response after drain");
+        };
+        assert_eq!(response.id, request_id.request_id);
+        let response: CommandExecResponse =
+            serde_json::from_value(response.result).expect("deserialize command/exec response");
+        assert_eq!(
+            response,
+            CommandExecResponse {
+                exit_code: 0,
+                stdout: "tail".to_string(),
+                stderr: String::new(),
+            }
+        );
+
+        run_task.await.expect("run_command task should complete");
     }
 }
