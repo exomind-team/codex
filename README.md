@@ -17,7 +17,7 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 > - Fork-specific additions currently include:
 >   - a shared pending-input queue for repeating queue and repeating steer messages, with distinct preview colors
 >   - `Shift+Tab` cycling collaboration mode when the composer is empty, and enqueuing a repeating queue message otherwise
->   - `Alt+↑` recalling the most recently enqueued queue or steer draft by enqueue order
+>   - `Alt+Up` recalling the most recently enqueued queue or steer draft by enqueue order
 >   - Termux compatibility work and a stable Android build path
 >   - fork-specific CI compatibility adjustments plus governance/task-tracking experiments
 > - When this block changes, update the `upstream/main` hash in the same PR so the fork baseline stays auditable
