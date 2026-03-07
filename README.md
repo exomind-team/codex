@@ -9,8 +9,10 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 </br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
 > [!NOTE]
-> **Exomind fork status**
+> Exomind fork status
+>
 > This fork tracks `openai/codex` and carries a small set of workflow-level changes on top of upstream.
+>
 > - README section updated on `2026-03-07`
 > - Latest `upstream/main` observed at update time: `9a4787c24`
 > - Current fork/upstream merge-base: `b6d43ec8`
