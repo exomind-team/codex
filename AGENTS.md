@@ -20,13 +20,19 @@ In the codex-rs folder where the rust code lives:
 - After dependency changes, run `just bazel-lock-check` from the repo root so lockfile drift is caught
   locally before CI.
 - Do not create small helper methods that are referenced only once.
+- On Termux/Android, use `scripts/termux/cargo-safe.sh ...` and `scripts/termux/just-safe.sh ...`
+  instead of invoking `cargo` or `just` directly for repo tasks. These wrappers inject
+  conservative resource settings only on Termux and act as passthrough elsewhere.
 
-Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
+Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. On Termux/Android, run `scripts/termux/just-safe.sh fmt` instead of invoking `just` directly. Additionally, run the tests:
 
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
+   On Termux/Android, use `scripts/termux/cargo-safe.sh test -p codex-tui`.
 2. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `cargo test` (or `just test` if `cargo-nextest` is installed). Avoid `--all-features` for routine local runs because it expands the build matrix and can significantly increase `target/` disk usage; use it only when you specifically need full feature coverage. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
+   On Termux/Android, use `scripts/termux/cargo-safe.sh test` or `scripts/termux/just-safe.sh test`.
 
 Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
+On Termux/Android, use `scripts/termux/just-safe.sh fix -p <project>`.
 
 ## TUI style conventions
 
