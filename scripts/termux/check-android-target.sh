@@ -2,6 +2,7 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 TARGET="aarch64-linux-android"
 
 need_cmd() {
@@ -37,7 +38,7 @@ fi
 
 cd "$ROOT_DIR/codex-rs"
 echo "[termux-check] cargo check -p codex-cli --target $TARGET"
-cargo check -p codex-cli --target "$TARGET"
+sh "$SCRIPT_DIR/cargo-safe.sh" check -p codex-cli --target "$TARGET"
 echo "[termux-check] cargo check -p codex-tui --target $TARGET"
-cargo check -p codex-tui --target "$TARGET"
+sh "$SCRIPT_DIR/cargo-safe.sh" check -p codex-tui --target "$TARGET"
 echo "[termux-check] done"

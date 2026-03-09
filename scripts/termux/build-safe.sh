@@ -2,6 +2,7 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 TARGET="aarch64-linux-android"
 
 need_cmd() {
@@ -14,38 +15,17 @@ need_cmd() {
 need_cmd cargo
 need_cmd rustc
 
-cores=$(nproc 2>/dev/null || echo 1)
-mem_kb=$(awk '/MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
-
-# Conservative job tuning for mobile memory pressure.
-if [ "${mem_kb:-0}" -lt 3000000 ]; then
-  jobs=1
-elif [ "${mem_kb:-0}" -lt 5000000 ]; then
-  jobs=2
-else
-  jobs=$((cores / 2))
-  [ "$jobs" -lt 2 ] && jobs=2
-  [ "$jobs" -gt 4 ] && jobs=4
-fi
-
-data_use_pct=$(df -P /data 2>/dev/null | awk 'NR==2 { gsub(/%/, "", $5); print $5 }')
-if [ -n "${data_use_pct:-}" ] && [ "${data_use_pct:-0}" -ge 92 ]; then
-  echo "[termux-build-safe] warning: /data usage is ${data_use_pct}% (low free space may cause instability)." >&2
-fi
+. "$SCRIPT_DIR/cargo-env.sh"
 
 echo "[termux-build-safe] target: $TARGET"
-echo "[termux-build-safe] cores: $cores"
-echo "[termux-build-safe] MemAvailable: ${mem_kb} kB"
-echo "[termux-build-safe] CARGO_BUILD_JOBS=$jobs"
-echo "[termux-build-safe] release overrides: LTO=off, codegen-units=16, debug=0"
+echo "[termux-build-safe] cores: ${TERMUX_CARGO_ENV_CORES:-unknown}"
+echo "[termux-build-safe] MemAvailable: ${TERMUX_CARGO_ENV_MEM_KB:-unknown} kB"
+echo "[termux-build-safe] CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-unset}"
+echo "[termux-build-safe] release overrides: LTO=${CARGO_PROFILE_RELEASE_LTO:-unset}, codegen-units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-unset}, debug=${CARGO_PROFILE_RELEASE_DEBUG:-unset}"
+echo "[termux-build-safe] dev/test debug overrides: dev=${CARGO_PROFILE_DEV_DEBUG:-unset}, test=${CARGO_PROFILE_TEST_DEBUG:-unset}"
 
 cd "$ROOT_DIR/codex-rs"
-
-CARGO_BUILD_JOBS="$jobs" \
-CARGO_PROFILE_RELEASE_LTO=off \
-CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-CARGO_PROFILE_RELEASE_DEBUG=0 \
-cargo build --release -p codex-cli -p codex-exec --target "$TARGET"
+sh "$SCRIPT_DIR/cargo-safe.sh" build --release -p codex-cli -p codex-exec --target "$TARGET"
 
 echo "[termux-build-safe] done"
 echo "[termux-build-safe] binaries:"
