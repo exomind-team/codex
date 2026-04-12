@@ -5,8 +5,10 @@ use crate::client::ModelClient;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
 use crate::codex::TurnContext;
+use crate::codex::run_replay_turn;
 use crate::codex::run_turn;
 use crate::error::Result as CodexResult;
+use crate::protocol::ReplayStateItem;
 use crate::state::TaskKind;
 use async_trait::async_trait;
 use codex_protocol::user_input::UserInput;
@@ -19,12 +21,14 @@ use super::SessionTaskContext;
 
 pub(crate) struct RegularTask {
     prewarmed_session: Mutex<Option<ModelClientSession>>,
+    replay_state: Option<ReplayStateItem>,
 }
 
 impl Default for RegularTask {
     fn default() -> Self {
         Self {
             prewarmed_session: Mutex::new(None),
+            replay_state: None,
         }
     }
 }
@@ -51,6 +55,7 @@ impl RegularTask {
 
         Ok(Self {
             prewarmed_session: Mutex::new(Some(client_session)),
+            replay_state: None,
         })
     }
 
@@ -59,6 +64,13 @@ impl RegularTask {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
+    }
+
+    pub(crate) fn from_replay(replay_state: ReplayStateItem) -> Self {
+        Self {
+            prewarmed_session: Mutex::new(None),
+            replay_state: Some(replay_state),
+        }
     }
 }
 
@@ -83,14 +95,29 @@ impl SessionTask for RegularTask {
         let run_turn_span = trace_span!("run_turn");
         sess.set_server_reasoning_included(false).await;
         let prewarmed_client_session = self.take_prewarmed_session().await;
-        run_turn(
-            sess,
-            ctx,
-            input,
-            prewarmed_client_session,
-            cancellation_token,
-        )
-        .instrument(run_turn_span)
-        .await
+        match &self.replay_state {
+            Some(replay_state) => {
+                run_replay_turn(
+                    sess,
+                    ctx,
+                    replay_state.clone(),
+                    prewarmed_client_session,
+                    cancellation_token,
+                )
+                .instrument(run_turn_span)
+                .await
+            }
+            None => {
+                run_turn(
+                    sess,
+                    ctx,
+                    input,
+                    prewarmed_client_session,
+                    cancellation_token,
+                )
+                .instrument(run_turn_span)
+                .await
+            }
+        }
     }
 }

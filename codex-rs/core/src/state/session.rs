@@ -10,6 +10,7 @@ use crate::codex::SessionConfiguration;
 use crate::context_manager::ContextManager;
 use crate::error::Result as CodexResult;
 use crate::protocol::RateLimitSnapshot;
+use crate::protocol::ReplayStateItem;
 use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
 use crate::tasks::RegularTask;
@@ -32,6 +33,7 @@ pub(crate) struct SessionState {
     pub(crate) startup_regular_task: Option<JoinHandle<CodexResult<RegularTask>>>,
     pub(crate) active_mcp_tool_selection: Option<Vec<String>>,
     pub(crate) active_connector_selection: HashSet<String>,
+    latest_replay_state: Option<ReplayStateItem>,
 }
 
 impl SessionState {
@@ -49,6 +51,7 @@ impl SessionState {
             startup_regular_task: None,
             active_mcp_tool_selection: None,
             active_connector_selection: HashSet::new(),
+            latest_replay_state: None,
         }
     }
 
@@ -216,6 +219,14 @@ impl SessionState {
 
     pub(crate) fn clear_mcp_tool_selection(&mut self) {
         self.active_mcp_tool_selection = None;
+    }
+
+    pub(crate) fn set_latest_replay_state(&mut self, state: Option<ReplayStateItem>) {
+        self.latest_replay_state = state;
+    }
+
+    pub(crate) fn latest_replay_state(&self) -> Option<ReplayStateItem> {
+        self.latest_replay_state.clone()
     }
 
     // Adds connector IDs to the active set and returns the merged selection.

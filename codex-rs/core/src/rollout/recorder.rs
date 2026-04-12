@@ -572,6 +572,9 @@ impl RolloutRecorder {
                     RolloutItem::TurnContext(item) => {
                         items.push(RolloutItem::TurnContext(item));
                     }
+                    RolloutItem::ReplayState(item) => {
+                        items.push(RolloutItem::ReplayState(item));
+                    }
                     RolloutItem::EventMsg(_ev) => {
                         items.push(RolloutItem::EventMsg(_ev));
                     }
@@ -1055,7 +1058,8 @@ async fn resume_candidate_matches_cwd(
             RolloutItem::SessionMeta(_)
             | RolloutItem::ResponseItem(_)
             | RolloutItem::Compacted(_)
-            | RolloutItem::EventMsg(_) => None,
+            | RolloutItem::EventMsg(_)
+            | RolloutItem::ReplayState(_) => None,
         })
     {
         return cwd_matches(latest_turn_context_cwd, cwd);

@@ -1163,6 +1163,9 @@ pub enum EventMsg {
     /// Response to GetHistoryEntryRequest.
     GetHistoryEntryResponse(GetHistoryEntryResponseEvent),
 
+    /// Structured status updates for core-owned durable replay.
+    ReplayStatus(ReplayStatusEvent),
+
     /// List of MCP tools available to the agent.
     McpListToolsResponse(McpListToolsResponseEvent),
 
@@ -2037,6 +2040,23 @@ impl InitialHistory {
             }),
         }
     }
+
+    pub fn latest_replay_state(&self) -> Option<ReplayStateItem> {
+        let items = match self {
+            InitialHistory::New => return None,
+            InitialHistory::Resumed(resumed) => &resumed.history,
+            InitialHistory::Forked(items) => items,
+        };
+
+        items.iter().rev().find_map(|item| match item {
+            RolloutItem::ReplayState(state) => Some(state.clone()),
+            RolloutItem::SessionMeta(_)
+            | RolloutItem::ResponseItem(_)
+            | RolloutItem::Compacted(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::EventMsg(_) => None,
+        })
+    }
 }
 
 fn session_cwd_from_items(items: &[RolloutItem]) -> Option<PathBuf> {
@@ -2203,6 +2223,7 @@ pub enum RolloutItem {
     ResponseItem(ResponseItem),
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
+    ReplayState(ReplayStateItem),
     EventMsg(EventMsg),
 }
 
@@ -2559,6 +2580,101 @@ pub struct StreamErrorEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct StreamInfoEvent {
     pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ReplayState {
+    Running,
+    Scheduled,
+    PausedManual,
+    PausedGate,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ReplayErrorCategory {
+    Transport,
+    RateLimit,
+    Server,
+    Auth,
+    BadRequest,
+    ContextWindow,
+    Sandbox,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ReplayPauseReason {
+    ManualInterrupt,
+    ExecApproval,
+    PatchApproval,
+    Elicitation,
+    RequestUserInput,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ReplayTaskKind {
+    Regular,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct ReplayCategoryAttemptState {
+    pub category: ReplayErrorCategory,
+    #[ts(type = "number")]
+    pub attempts: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct ReplayStatusEvent {
+    pub turn_id: String,
+    pub state: ReplayState,
+    #[ts(type = "number")]
+    pub attempt: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error_category: Option<ReplayErrorCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub next_retry_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub paused_reason: Option<ReplayPauseReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_subagent: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
+pub struct ReplayStateItem {
+    pub turn_id: String,
+    pub task_kind: ReplayTaskKind,
+    pub state: ReplayState,
+    pub prompt_input: Vec<ResponseItem>,
+    pub turn_enabled_connectors: Vec<String>,
+    pub category_attempts: Vec<ReplayCategoryAttemptState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error_category: Option<ReplayErrorCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub next_retry_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub paused_reason: Option<ReplayPauseReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

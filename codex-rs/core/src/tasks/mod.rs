@@ -390,6 +390,10 @@ impl Session {
             .await;
 
         if reason == TurnAbortReason::Interrupted {
+            if task.kind == TaskKind::Regular {
+                self.pause_replay_for_manual_interrupt(task.turn_context.as_ref())
+                    .await;
+            }
             let marker = ResponseItem::Message {
                 id: None,
                 role: "user".to_string(),

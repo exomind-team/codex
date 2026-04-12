@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::time::Duration;
 
 use crate::AuthManager;
 use crate::CodexAuth;
@@ -114,6 +115,7 @@ use codex_utils_stream_parser::strip_citations;
 use futures::future::BoxFuture;
 use futures::prelude::*;
 use futures::stream::FuturesOrdered;
+use rand::Rng;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::PaginatedRequestParams;
@@ -234,6 +236,13 @@ use crate::protocol::PlanDeltaEvent;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::ReasoningContentDeltaEvent;
 use crate::protocol::ReasoningRawContentDeltaEvent;
+use crate::protocol::ReplayCategoryAttemptState;
+use crate::protocol::ReplayErrorCategory;
+use crate::protocol::ReplayPauseReason;
+use crate::protocol::ReplayState;
+use crate::protocol::ReplayStateItem;
+use crate::protocol::ReplayStatusEvent;
+use crate::protocol::ReplayTaskKind;
 use crate::protocol::RequestUserInputEvent;
 use crate::protocol::ReviewDecision;
 use crate::protocol::SandboxPolicy;
@@ -1701,6 +1710,7 @@ impl Session {
 
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
         sess.record_initial_history(initial_history).await;
+        sess.maybe_resume_pending_replay().await;
 
         memories::start_memories_startup_task(
             &sess,
@@ -1839,6 +1849,8 @@ impl Session {
 
     async fn record_initial_history(&self, conversation_history: InitialHistory) {
         let turn_context = self.new_default_turn().await;
+        self.set_latest_replay_state(conversation_history.latest_replay_state())
+            .await;
         self.clear_mcp_tool_selection().await;
         let is_subagent = {
             let state = self.state.lock().await;
@@ -2287,6 +2299,33 @@ impl Session {
                 None
             }
         }
+    }
+
+    async fn maybe_resume_pending_replay(self: &Arc<Self>) {
+        let Some(replay_state) = self.latest_replay_state().await else {
+            return;
+        };
+        if replay_state.task_kind != ReplayTaskKind::Regular
+            || !matches!(
+                replay_state.state,
+                ReplayState::Running | ReplayState::Scheduled
+            )
+        {
+            return;
+        }
+
+        let turn_context = self
+            .new_default_turn_with_sub_id(replay_state.turn_id.clone())
+            .await;
+        self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
+            .await;
+        self.refresh_mcp_servers_if_requested(&turn_context).await;
+        self.spawn_task(
+            turn_context,
+            Vec::new(),
+            RegularTask::from_replay(replay_state),
+        )
+        .await;
     }
 
     async fn schedule_startup_prewarm(self: &Arc<Self>, base_instructions: String) {
@@ -3516,6 +3555,72 @@ impl Session {
         self.send_event(turn_context, event).await;
     }
 
+    pub(crate) async fn latest_replay_state(&self) -> Option<ReplayStateItem> {
+        let state = self.state.lock().await;
+        state.latest_replay_state()
+    }
+
+    pub(crate) async fn set_latest_replay_state(&self, replay_state: Option<ReplayStateItem>) {
+        let mut state = self.state.lock().await;
+        state.set_latest_replay_state(replay_state);
+    }
+
+    pub(crate) async fn persist_replay_state(&self, replay_state: ReplayStateItem) {
+        self.set_latest_replay_state(Some(replay_state.clone()))
+            .await;
+        self.persist_rollout_items(&[RolloutItem::ReplayState(replay_state)])
+            .await;
+    }
+
+    pub(crate) async fn pause_replay_for_manual_interrupt(&self, turn_context: &TurnContext) {
+        let Some(mut replay_state) = self.latest_replay_state().await else {
+            return;
+        };
+        if replay_state.turn_id != turn_context.sub_id
+            || matches!(
+                replay_state.state,
+                ReplayState::Completed | ReplayState::PausedManual
+            )
+        {
+            return;
+        }
+
+        replay_state.state = ReplayState::PausedManual;
+        replay_state.next_retry_at = None;
+        replay_state.paused_reason = Some(ReplayPauseReason::ManualInterrupt);
+        self.persist_replay_state(replay_state.clone()).await;
+        self.notify_replay_status(turn_context, &replay_state).await;
+    }
+
+    pub(crate) async fn notify_replay_status(
+        &self,
+        turn_context: &TurnContext,
+        replay_state: &ReplayStateItem,
+    ) {
+        let attempt = replay_status_attempt(replay_state);
+        let is_subagent = {
+            let state = self.state.lock().await;
+            matches!(
+                state.session_configuration.session_source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            )
+        };
+        self.send_event(
+            turn_context,
+            EventMsg::ReplayStatus(ReplayStatusEvent {
+                turn_id: replay_state.turn_id.clone(),
+                state: replay_state.state,
+                attempt,
+                error_category: replay_state.error_category,
+                next_retry_at: replay_state.next_retry_at,
+                paused_reason: replay_state.paused_reason,
+                message: replay_state.last_error_message.clone(),
+                is_subagent,
+            }),
+        )
+        .await;
+    }
+
     async fn maybe_start_ghost_snapshot(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
@@ -4076,6 +4181,7 @@ mod handlers {
     use crate::rollout::RolloutRecorder;
     use crate::rollout::session_index;
     use crate::tasks::CompactTask;
+    use crate::tasks::RegularTask;
     use crate::tasks::UndoTask;
     use crate::tasks::UserShellCommandMode;
     use crate::tasks::UserShellCommandTask;
@@ -4094,6 +4200,8 @@ mod handlers {
     use codex_protocol::protocol::RemoteSkillHazelnutScope;
     use codex_protocol::protocol::RemoteSkillProductSurface;
     use codex_protocol::protocol::RemoteSkillSummary;
+    use codex_protocol::protocol::ReplayState;
+    use codex_protocol::protocol::ReplayTaskKind;
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
     use codex_protocol::protocol::RolloutItem;
@@ -4197,6 +4305,43 @@ mod handlers {
             ),
             _ => unreachable!(),
         };
+
+        if let Some(replay_state) = sess.latest_replay_state().await.filter(|replay_state| {
+            replay_state.task_kind == ReplayTaskKind::Regular
+                && replay_state.state == ReplayState::PausedManual
+        }) {
+            if items.is_empty() {
+                let turn_context = sess
+                    .new_default_turn_with_sub_id(replay_state.turn_id.clone())
+                    .await;
+                sess.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
+                    .await;
+                sess.refresh_mcp_servers_if_requested(&turn_context).await;
+                sess.spawn_task(
+                    Arc::clone(&turn_context),
+                    Vec::new(),
+                    RegularTask::from_replay(replay_state),
+                )
+                .await;
+                return;
+            }
+
+            let Ok(current_context) = sess
+                .new_turn_with_sub_id(replay_state.turn_id.clone(), updates)
+                .await
+            else {
+                return;
+            };
+            sess.maybe_emit_unknown_model_warning_for_turn(current_context.as_ref())
+                .await;
+            current_context.session_telemetry.user_prompt(&items);
+            sess.refresh_mcp_servers_if_requested(&current_context)
+                .await;
+            let regular_task = sess.take_startup_regular_task().await.unwrap_or_default();
+            sess.spawn_task(Arc::clone(&current_context), items, regular_task)
+                .await;
+            return;
+        }
 
         let Ok(current_context) = sess.new_turn_with_sub_id(sub_id, updates).await else {
             // new_turn_with_sub_id already emits the error event.
@@ -5149,7 +5294,7 @@ pub(crate) async fn run_turn(
         return None;
     }
 
-    let skills_outcome = Some(turn_context.turn_skills.outcome.as_ref());
+    let skills_outcome = Some(Arc::clone(&turn_context.turn_skills.outcome));
 
     sess.record_context_updates_and_set_reference_context_item(turn_context.as_ref())
         .await;
@@ -5313,21 +5458,94 @@ pub(crate) async fn run_turn(
 
     sess.maybe_start_ghost_snapshot(Arc::clone(&turn_context), cancellation_token.child_token())
         .await;
-    let mut last_agent_message: Option<String> = None;
-    // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
-    // many turns, from the perspective of the user, it is a single turn.
+    run_regular_sampling_loop(
+        sess,
+        turn_context,
+        auto_compact_limit,
+        prewarmed_client_session,
+        turn_enabled_connectors,
+        skills_outcome.as_deref(),
+        None,
+        Vec::new(),
+        cancellation_token,
+    )
+    .await
+}
+
+pub(crate) async fn run_replay_turn(
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    replay_state: ReplayStateItem,
+    prewarmed_client_session: Option<ModelClientSession>,
+    cancellation_token: CancellationToken,
+) -> Option<String> {
+    if replay_state.task_kind != ReplayTaskKind::Regular {
+        return None;
+    }
+
+    match replay_state.state {
+        ReplayState::Completed | ReplayState::PausedGate => return None,
+        ReplayState::Scheduled => {
+            sess.notify_replay_status(&turn_context, &replay_state)
+                .await;
+            if let Some(next_retry_at) = replay_state.next_retry_at {
+                let now = Utc::now().timestamp();
+                if next_retry_at > now {
+                    let delay = Duration::from_secs(
+                        u64::try_from(next_retry_at.saturating_sub(now)).unwrap_or(0),
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = cancellation_token.cancelled() => return None,
+                    }
+                }
+            }
+        }
+        ReplayState::Running | ReplayState::PausedManual => {}
+    }
+
+    let auto_compact_limit = turn_context
+        .model_info
+        .auto_compact_token_limit()
+        .unwrap_or(i64::MAX);
+    let skills_outcome = Some(Arc::clone(&turn_context.turn_skills.outcome));
+    let turn_enabled_connectors = replay_state
+        .turn_enabled_connectors
+        .into_iter()
+        .collect::<HashSet<String>>();
+
+    run_regular_sampling_loop(
+        sess,
+        turn_context,
+        auto_compact_limit,
+        prewarmed_client_session,
+        turn_enabled_connectors,
+        skills_outcome.as_deref(),
+        Some(replay_state.prompt_input),
+        replay_state.category_attempts,
+        cancellation_token,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_regular_sampling_loop(
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    auto_compact_limit: i64,
+    prewarmed_client_session: Option<ModelClientSession>,
+    turn_enabled_connectors: HashSet<String>,
+    skills_outcome: Option<&SkillLoadOutcome>,
+    mut stage_prompt_input: Option<Vec<ResponseItem>>,
+    mut category_attempts: Vec<ReplayCategoryAttemptState>,
+    cancellation_token: CancellationToken,
+) -> Option<String> {
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
     let mut server_model_warning_emitted_for_turn = false;
-
-    // `ModelClientSession` is turn-scoped and caches WebSocket + sticky routing state, so we reuse
-    // one instance across retries within this turn.
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
 
     loop {
-        // Note that pending_input would be something like a message the user
-        // submitted through the UI while the model was running. Though the UI
-        // may support this, the model might not.
         let pending_response_items = sess
             .get_pending_input()
             .await
@@ -5338,7 +5556,6 @@ pub(crate) async fn run_turn(
         if !pending_response_items.is_empty() {
             for response_item in pending_response_items {
                 if let Some(TurnItem::UserMessage(user_message)) = parse_turn_item(&response_item) {
-                    // todo(aibrahim): move pending input to be UserInput only to keep TextElements. context: https://github.com/openai/codex/pull/10656#discussion_r2765522480
                     sess.record_user_prompt_and_emit_turn_item(
                         turn_context.as_ref(),
                         &user_message.content,
@@ -5353,14 +5570,33 @@ pub(crate) async fn run_turn(
                     .await;
                 }
             }
+            stage_prompt_input = None;
+            clear_replay_attempts(&mut category_attempts);
         }
 
-        // Construct the input that we will send to the model.
-        let sampling_request_input: Vec<ResponseItem> = {
-            sess.clone_history()
+        let sampling_request_input = match stage_prompt_input.clone() {
+            Some(prompt_input) => prompt_input,
+            None => sess
+                .clone_history()
                 .await
-                .for_prompt(&turn_context.model_info.input_modalities)
+                .for_prompt(&turn_context.model_info.input_modalities),
         };
+
+        let running_replay_state = replay_state_item(
+            turn_context.as_ref(),
+            ReplayState::Running,
+            sampling_request_input.clone(),
+            &turn_enabled_connectors,
+            &category_attempts,
+            None,
+            None,
+            None,
+            None,
+        );
+        sess.persist_replay_state(running_replay_state.clone())
+            .await;
+        sess.notify_replay_status(&turn_context, &running_replay_state)
+            .await;
 
         let sampling_request_input_messages = sampling_request_input
             .iter()
@@ -5377,7 +5613,7 @@ pub(crate) async fn run_turn(
             Arc::clone(&turn_diff_tracker),
             &mut client_session,
             turn_metadata_header.as_deref(),
-            sampling_request_input,
+            sampling_request_input.clone(),
             &turn_enabled_connectors,
             skills_outcome,
             &mut server_model_warning_emitted_for_turn,
@@ -5406,7 +5642,6 @@ pub(crate) async fn run_turn(
                     "post sampling token usage"
                 );
 
-                // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if token_limit_reached && needs_follow_up {
                     if run_auto_compact(
                         &sess,
@@ -5418,11 +5653,12 @@ pub(crate) async fn run_turn(
                     {
                         return None;
                     }
+                    stage_prompt_input = None;
+                    clear_replay_attempts(&mut category_attempts);
                     continue;
                 }
 
                 if !needs_follow_up {
-                    last_agent_message = sampling_request_last_agent_message;
                     let hook_outcomes = sess
                         .hooks()
                         .dispatch(HookPayload {
@@ -5435,7 +5671,8 @@ pub(crate) async fn run_turn(
                                     thread_id: sess.conversation_id,
                                     turn_id: turn_context.sub_id.clone(),
                                     input_messages: sampling_request_input_messages,
-                                    last_assistant_message: last_agent_message.clone(),
+                                    last_assistant_message: sampling_request_last_agent_message
+                                        .clone(),
                                 },
                             },
                         })
@@ -5481,13 +5718,31 @@ pub(crate) async fn run_turn(
                         .await;
                         return None;
                     }
-                    break;
+
+                    let completed_replay_state = replay_state_item(
+                        turn_context.as_ref(),
+                        ReplayState::Completed,
+                        sampling_request_input,
+                        &turn_enabled_connectors,
+                        &category_attempts,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                    sess.persist_replay_state(completed_replay_state.clone())
+                        .await;
+                    sess.notify_replay_status(&turn_context, &completed_replay_state)
+                        .await;
+                    return sampling_request_last_agent_message;
                 }
+
+                stage_prompt_input = None;
+                clear_replay_attempts(&mut category_attempts);
                 continue;
             }
             Err(CodexErr::TurnAborted) => {
-                // Aborted turn is reported via a different event.
-                break;
+                return None;
             }
             Err(CodexErr::InvalidImageRequest()) => {
                 let mut state = sess.state.lock().await;
@@ -5495,6 +5750,8 @@ pub(crate) async fn run_turn(
                     "Invalid image detected; sanitizing tool output to prevent poisoning",
                 );
                 if state.history.replace_last_turn_images("Invalid image") {
+                    stage_prompt_input = None;
+                    clear_replay_attempts(&mut category_attempts);
                     continue;
                 }
                 let event = EventMsg::Error(ErrorEvent {
@@ -5503,19 +5760,184 @@ pub(crate) async fn run_turn(
                     codex_error_info: Some(CodexErrorInfo::BadRequest),
                 });
                 sess.send_event(&turn_context, event).await;
-                break;
+                return None;
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
-                let event = EventMsg::Error(e.to_error_event(None));
-                sess.send_event(&turn_context, event).await;
-                // let the user continue the conversation
-                break;
+                let category = replay_error_category(&e);
+                let attempt = increment_replay_attempts(&mut category_attempts, category);
+                let delay = compute_replay_delay(&e, category, attempt);
+                let scheduled_replay_state = replay_state_item(
+                    turn_context.as_ref(),
+                    ReplayState::Scheduled,
+                    sampling_request_input.clone(),
+                    &turn_enabled_connectors,
+                    &category_attempts,
+                    Some(category),
+                    next_retry_at(delay),
+                    None,
+                    Some(e.to_string()),
+                );
+                sess.persist_replay_state(scheduled_replay_state.clone())
+                    .await;
+                sess.notify_replay_status(&turn_context, &scheduled_replay_state)
+                    .await;
+
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = cancellation_token.cancelled() => {
+                        return None;
+                    }
+                }
+
+                stage_prompt_input = Some(sampling_request_input);
             }
         }
     }
+}
 
-    last_agent_message
+fn increment_replay_attempts(
+    attempts: &mut Vec<ReplayCategoryAttemptState>,
+    category: ReplayErrorCategory,
+) -> u64 {
+    if let Some(entry) = attempts.iter_mut().find(|entry| entry.category == category) {
+        entry.attempts = entry.attempts.saturating_add(1);
+        return entry.attempts;
+    }
+
+    attempts.push(ReplayCategoryAttemptState {
+        category,
+        attempts: 1,
+    });
+    1
+}
+
+fn clear_replay_attempts(attempts: &mut Vec<ReplayCategoryAttemptState>) {
+    attempts.clear();
+}
+
+fn replay_error_category(err: &CodexErr) -> ReplayErrorCategory {
+    match err {
+        CodexErr::Stream(_, _)
+        | CodexErr::ResponseStreamFailed(_)
+        | CodexErr::ConnectionFailed(_) => ReplayErrorCategory::Transport,
+        CodexErr::Timeout
+        | CodexErr::RetryLimit(_)
+        | CodexErr::UsageLimitReached(_)
+        | CodexErr::QuotaExceeded
+        | CodexErr::UsageNotIncluded
+        | CodexErr::ServerOverloaded => ReplayErrorCategory::RateLimit,
+        CodexErr::InternalServerError | CodexErr::InternalAgentDied => ReplayErrorCategory::Server,
+        CodexErr::RefreshTokenFailed(_) => ReplayErrorCategory::Auth,
+        CodexErr::ContextWindowExceeded => ReplayErrorCategory::ContextWindow,
+        CodexErr::Sandbox(_) => ReplayErrorCategory::Sandbox,
+        CodexErr::InvalidRequest(_)
+        | CodexErr::InvalidImageRequest()
+        | CodexErr::UnexpectedStatus(_)
+        | CodexErr::UnsupportedOperation(_)
+        | CodexErr::ThreadNotFound(_)
+        | CodexErr::AgentLimitReached { .. }
+        | CodexErr::SessionConfiguredNotFirstEvent
+        | CodexErr::LandlockSandboxExecutableNotProvided => ReplayErrorCategory::BadRequest,
+        CodexErr::TurnAborted
+        | CodexErr::Spawn
+        | CodexErr::Interrupted
+        | CodexErr::Fatal(_)
+        | CodexErr::Io(_)
+        | CodexErr::Json(_)
+        | CodexErr::TokioJoin(_)
+        | CodexErr::EnvVar(_) => ReplayErrorCategory::Other,
+        #[cfg(target_os = "linux")]
+        CodexErr::LandlockRuleset(_) | CodexErr::LandlockPathFd(_) => ReplayErrorCategory::Other,
+    }
+}
+
+fn replay_delay_cap(category: ReplayErrorCategory) -> Duration {
+    match category {
+        ReplayErrorCategory::Transport => Duration::from_secs(30),
+        ReplayErrorCategory::RateLimit => Duration::from_secs(60),
+        ReplayErrorCategory::Server => Duration::from_secs(300),
+        ReplayErrorCategory::Auth
+        | ReplayErrorCategory::BadRequest
+        | ReplayErrorCategory::ContextWindow
+        | ReplayErrorCategory::Sandbox
+        | ReplayErrorCategory::Other => Duration::from_secs(300),
+    }
+}
+
+fn replay_service_delay(err: &CodexErr) -> Option<Duration> {
+    match err {
+        CodexErr::Stream(_, Some(delay)) => Some(*delay),
+        CodexErr::UsageLimitReached(usage_limit) => usage_limit.resets_at.and_then(|resets_at| {
+            let delta = resets_at.signed_duration_since(Utc::now());
+            delta.to_std().ok()
+        }),
+        _ => None,
+    }
+}
+
+fn compute_replay_delay(err: &CodexErr, category: ReplayErrorCategory, attempt: u64) -> Duration {
+    let cap = replay_delay_cap(category);
+    if let Some(delay) = replay_service_delay(err) {
+        return delay.min(cap);
+    }
+
+    let exponent = 2_f64.powi(attempt.saturating_sub(1) as i32);
+    let base_ms = 1_000_f64 * exponent;
+    let jitter = rand::rng().random_range(0.5..1.5);
+    let computed = Duration::from_millis((base_ms * jitter) as u64);
+    computed.min(cap)
+}
+
+fn next_retry_at(delay: Duration) -> Option<i64> {
+    chrono::Duration::from_std(delay)
+        .ok()
+        .map(|delta| (Utc::now() + delta).timestamp())
+}
+
+fn replay_state_item(
+    turn_context: &TurnContext,
+    state: ReplayState,
+    prompt_input: Vec<ResponseItem>,
+    turn_enabled_connectors: &HashSet<String>,
+    category_attempts: &[ReplayCategoryAttemptState],
+    error_category: Option<ReplayErrorCategory>,
+    next_retry_at: Option<i64>,
+    paused_reason: Option<ReplayPauseReason>,
+    last_error_message: Option<String>,
+) -> ReplayStateItem {
+    ReplayStateItem {
+        turn_id: turn_context.sub_id.clone(),
+        task_kind: ReplayTaskKind::Regular,
+        state,
+        prompt_input,
+        turn_enabled_connectors: turn_enabled_connectors.iter().cloned().collect(),
+        category_attempts: category_attempts.to_vec(),
+        error_category,
+        next_retry_at,
+        paused_reason,
+        last_error_message,
+    }
+}
+
+fn replay_status_attempt(replay_state: &ReplayStateItem) -> u64 {
+    if let Some(category) = replay_state.error_category
+        && let Some(entry) = replay_state
+            .category_attempts
+            .iter()
+            .find(|entry| entry.category == category)
+    {
+        return entry.attempts;
+    }
+    if matches!(replay_state.state, ReplayState::Running)
+        && replay_state
+            .category_attempts
+            .iter()
+            .any(|entry| entry.attempts > 0)
+    {
+        return 1;
+    }
+    0
 }
 
 async fn run_pre_sampling_compact(
@@ -6225,6 +6647,7 @@ fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::StreamError(_)
         | EventMsg::TurnDiff(_)
         | EventMsg::GetHistoryEntryResponse(_)
+        | EventMsg::ReplayStatus(_)
         | EventMsg::McpListToolsResponse(_)
         | EventMsg::ListCustomPromptsResponse(_)
         | EventMsg::ListSkillsResponse(_)

@@ -81,6 +81,85 @@ use std::time::Duration as StdDuration;
 #[path = "codex_tests_guardian.rs"]
 mod guardian_tests;
 
+#[test]
+fn running_replay_status_attempt_is_zero_before_backoff() {
+    let replay_state = ReplayStateItem {
+        turn_id: "turn-1".to_string(),
+        task_kind: ReplayTaskKind::Regular,
+        state: ReplayState::Running,
+        prompt_input: Vec::new(),
+        turn_enabled_connectors: Vec::new(),
+        category_attempts: Vec::new(),
+        error_category: None,
+        next_retry_at: None,
+        paused_reason: None,
+        last_error_message: None,
+    };
+
+    assert_eq!(replay_status_attempt(&replay_state), 0);
+}
+
+#[test]
+fn running_replay_status_attempt_marks_retry_after_backoff() {
+    let replay_state = ReplayStateItem {
+        turn_id: "turn-1".to_string(),
+        task_kind: ReplayTaskKind::Regular,
+        state: ReplayState::Running,
+        prompt_input: Vec::new(),
+        turn_enabled_connectors: Vec::new(),
+        category_attempts: vec![ReplayCategoryAttemptState {
+            category: ReplayErrorCategory::RateLimit,
+            attempts: 3,
+        }],
+        error_category: None,
+        next_retry_at: None,
+        paused_reason: None,
+        last_error_message: None,
+    };
+
+    assert_eq!(replay_status_attempt(&replay_state), 1);
+}
+
+#[test]
+fn replay_delay_cap_limits_rate_limit_to_one_minute() {
+    assert_eq!(
+        replay_delay_cap(ReplayErrorCategory::RateLimit),
+        Duration::from_secs(60)
+    );
+}
+
+#[test]
+fn replay_delay_cap_limits_other_long_waits_to_five_minutes() {
+    assert_eq!(
+        replay_delay_cap(ReplayErrorCategory::Transport),
+        Duration::from_secs(30)
+    );
+    assert_eq!(
+        replay_delay_cap(ReplayErrorCategory::Server),
+        Duration::from_secs(300)
+    );
+    assert_eq!(
+        replay_delay_cap(ReplayErrorCategory::Auth),
+        Duration::from_secs(300)
+    );
+    assert_eq!(
+        replay_delay_cap(ReplayErrorCategory::BadRequest),
+        Duration::from_secs(300)
+    );
+    assert_eq!(
+        replay_delay_cap(ReplayErrorCategory::ContextWindow),
+        Duration::from_secs(300)
+    );
+    assert_eq!(
+        replay_delay_cap(ReplayErrorCategory::Sandbox),
+        Duration::from_secs(300)
+    );
+    assert_eq!(
+        replay_delay_cap(ReplayErrorCategory::Other),
+        Duration::from_secs(300)
+    );
+}
+
 struct InstructionsTestCase {
     slug: &'static str,
     expects_apply_patch_instructions: bool,

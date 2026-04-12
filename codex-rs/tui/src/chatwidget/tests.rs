@@ -83,6 +83,9 @@ use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::RateLimitWindow;
+use codex_protocol::protocol::ReplayErrorCategory;
+use codex_protocol::protocol::ReplayState;
+use codex_protocol::protocol::ReplayStatusEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::SessionSource;
@@ -1839,8 +1842,8 @@ async fn make_chatwidget_manual(
         queued_user_messages: VecDeque::new(),
         next_queued_message_seq: 0,
         in_flight_user_message: None,
-        retry_current_user_message: None,
         paused_current_user_message: None,
+        replay_status: None,
         active_turn_id: None,
         ignored_turn_complete_ids: HashSet::new(),
         pending_rlph_exec_commands: VecDeque::new(),
@@ -1899,6 +1902,28 @@ fn assert_no_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) {
             !matches!(op, Op::UserTurn { .. }),
             "unexpected submit op: {op:?}"
         );
+    }
+}
+
+fn replay_status_event(
+    turn_id: &str,
+    state: ReplayState,
+    attempt: u64,
+    error_category: Option<ReplayErrorCategory>,
+) -> Event {
+    Event {
+        id: format!("replay-{attempt}"),
+        msg: EventMsg::ReplayStatus(ReplayStatusEvent {
+            turn_id: turn_id.to_string(),
+            state,
+            attempt,
+            error_category,
+            next_retry_at: matches!(state, ReplayState::Scheduled)
+                .then_some(chrono::Utc::now().timestamp() + 30),
+            paused_reason: None,
+            message: None,
+            is_subagent: false,
+        }),
     }
 }
 
@@ -7267,7 +7292,7 @@ async fn server_overloaded_error_does_not_switch_models() {
 }
 
 #[tokio::test]
-async fn transient_retry_limit_error_retries_current_message_before_advancing_queue() {
+async fn replay_status_keeps_current_message_in_flight_before_advancing_queue() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.thread_id = Some(ThreadId::new());
 
@@ -7293,26 +7318,25 @@ async fn transient_retry_limit_error_retries_current_message_before_advancing_qu
     });
     chat.queue_user_message(UserMessage::from("second".to_string()));
 
-    chat.handle_codex_event(Event {
-        id: "err-1".into(),
-        msg: EventMsg::Error(ErrorEvent {
-            message: "exceeded retry limit, last status: 429 Too Many Requests".to_string(),
-            codex_error_info: Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
-                http_status_code: Some(429),
-            }),
-        }),
-    });
+    chat.handle_codex_event(replay_status_event(
+        "turn-1",
+        ReplayState::Scheduled,
+        1,
+        Some(ReplayErrorCategory::RateLimit),
+    ));
 
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { items, .. } => assert_eq!(
-            items,
-            vec![UserInput::Text {
-                text: "first".to_string(),
-                text_elements: Vec::new(),
-            }]
-        ),
-        other => panic!("expected Op::UserTurn retry, got {other:?}"),
-    }
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.in_flight_user_message
+            .as_ref()
+            .map(|message| message.text.clone()),
+        Some("first".to_string())
+    );
+    assert!(chat.paused_current_user_message.is_none());
+    assert_eq!(
+        chat.replay_status.as_ref().map(|replay| replay.state),
+        Some(ReplayState::Scheduled)
+    );
     assert_eq!(
         chat.queued_user_messages
             .iter()
@@ -7322,17 +7346,9 @@ async fn transient_retry_limit_error_retries_current_message_before_advancing_qu
     );
 
     chat.handle_codex_event(Event {
-        id: "turn-start-2".into(),
-        msg: EventMsg::TurnStarted(TurnStartedEvent {
-            turn_id: "turn-2".to_string(),
-            model_context_window: None,
-            collaboration_mode_kind: ModeKind::Default,
-        }),
-    });
-    chat.handle_codex_event(Event {
-        id: "turn-complete-2".into(),
+        id: "turn-complete-1".into(),
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-2".to_string(),
+            turn_id: "turn-1".to_string(),
             last_agent_message: None,
         }),
     });
@@ -7350,7 +7366,7 @@ async fn transient_retry_limit_error_retries_current_message_before_advancing_qu
 }
 
 #[tokio::test]
-async fn transient_connection_error_retries_current_message_before_advancing_queue() {
+async fn transport_replay_status_keeps_current_message_in_flight_before_advancing_queue() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.thread_id = Some(ThreadId::new());
 
@@ -7367,26 +7383,20 @@ async fn transient_connection_error_retries_current_message_before_advancing_que
     });
     chat.queue_user_message(UserMessage::from("beta".to_string()));
 
-    chat.handle_codex_event(Event {
-        id: "err-1".into(),
-        msg: EventMsg::Error(ErrorEvent {
-            message: "connection failed while streaming response".to_string(),
-            codex_error_info: Some(CodexErrorInfo::HttpConnectionFailed {
-                http_status_code: Some(502),
-            }),
-        }),
-    });
+    chat.handle_codex_event(replay_status_event(
+        "turn-1",
+        ReplayState::Scheduled,
+        1,
+        Some(ReplayErrorCategory::Transport),
+    ));
 
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { items, .. } => assert_eq!(
-            items,
-            vec![UserInput::Text {
-                text: "alpha".to_string(),
-                text_elements: Vec::new(),
-            }]
-        ),
-        other => panic!("expected Op::UserTurn retry, got {other:?}"),
-    }
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.in_flight_user_message
+            .as_ref()
+            .map(|message| message.text.clone()),
+        Some("alpha".to_string())
+    );
     assert_eq!(
         chat.queued_user_messages
             .iter()
@@ -7394,65 +7404,11 @@ async fn transient_connection_error_retries_current_message_before_advancing_que
             .collect::<Vec<_>>(),
         vec!["beta".to_string()]
     );
-}
-
-#[tokio::test]
-async fn late_turn_complete_after_transient_retry_does_not_advance_queue() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
-    chat.thread_id = Some(ThreadId::new());
-
-    chat.submit_user_message(UserMessage::from("alpha".to_string()));
-    let _ = next_submit_op(&mut op_rx);
-
-    chat.handle_codex_event(Event {
-        id: "turn-start-1".into(),
-        msg: EventMsg::TurnStarted(TurnStartedEvent {
-            turn_id: "turn-1".to_string(),
-            model_context_window: None,
-            collaboration_mode_kind: ModeKind::Default,
-        }),
-    });
-    chat.queue_user_message(UserMessage::from("beta".to_string()));
-
-    chat.handle_codex_event(Event {
-        id: "err-1".into(),
-        msg: EventMsg::Error(ErrorEvent {
-            message: "connection failed while streaming response".to_string(),
-            codex_error_info: Some(CodexErrorInfo::HttpConnectionFailed {
-                http_status_code: Some(502),
-            }),
-        }),
-    });
-    let _ = next_submit_op(&mut op_rx);
 
     chat.handle_codex_event(Event {
         id: "turn-complete-1".into(),
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-        }),
-    });
-    assert_no_submit_op(&mut op_rx);
-    assert_eq!(
-        chat.queued_user_messages
-            .iter()
-            .map(|message| message.text.clone())
-            .collect::<Vec<_>>(),
-        vec!["beta".to_string()]
-    );
-
-    chat.handle_codex_event(Event {
-        id: "turn-start-2".into(),
-        msg: EventMsg::TurnStarted(TurnStartedEvent {
-            turn_id: "turn-2".to_string(),
-            model_context_window: None,
-            collaboration_mode_kind: ModeKind::Default,
-        }),
-    });
-    chat.handle_codex_event(Event {
-        id: "turn-complete-2".into(),
-        msg: EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-2".to_string(),
             last_agent_message: None,
         }),
     });
@@ -7465,7 +7421,75 @@ async fn late_turn_complete_after_transient_retry_does_not_advance_queue() {
                 text_elements: Vec::new(),
             }]
         ),
-        other => panic!("expected queued follow-up after retry turn completed, got {other:?}"),
+        other => panic!("expected queued Op::UserTurn after replay completion, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stale_turn_complete_while_replaying_does_not_advance_queue() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.submit_user_message(UserMessage::from("alpha".to_string()));
+    let _ = next_submit_op(&mut op_rx);
+
+    chat.handle_codex_event(Event {
+        id: "turn-start-1".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+    chat.queue_user_message(UserMessage::from("beta".to_string()));
+
+    chat.handle_codex_event(replay_status_event(
+        "turn-1",
+        ReplayState::Scheduled,
+        1,
+        Some(ReplayErrorCategory::Transport),
+    ));
+    assert_no_submit_op(&mut op_rx);
+
+    chat.handle_codex_event(Event {
+        id: "turn-complete-stale".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-0".to_string(),
+            last_agent_message: None,
+        }),
+    });
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.in_flight_user_message
+            .as_ref()
+            .map(|message| message.text.clone()),
+        Some("alpha".to_string())
+    );
+    assert_eq!(
+        chat.queued_user_messages
+            .iter()
+            .map(|message| message.text.clone())
+            .collect::<Vec<_>>(),
+        vec!["beta".to_string()]
+    );
+
+    chat.handle_codex_event(Event {
+        id: "turn-complete-1".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+        }),
+    });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "beta".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected queued follow-up after replay turn completed, got {other:?}"),
     }
 }
 
@@ -7594,7 +7618,7 @@ async fn non_empty_submit_while_queue_paused_stays_queued() {
 }
 
 #[tokio::test]
-async fn repeated_retry_limit_errors_do_not_advance_queue_during_retry_gap() {
+async fn repeated_replay_status_events_do_not_advance_queue() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.thread_id = Some(ThreadId::new());
 
@@ -7611,16 +7635,12 @@ async fn repeated_retry_limit_errors_do_not_advance_queue_during_retry_gap() {
     });
     chat.queue_user_message(UserMessage::from("second".to_string()));
 
-    chat.handle_codex_event(Event {
-        id: "err-1".into(),
-        msg: EventMsg::Error(ErrorEvent {
-            message: "exceeded retry limit, last status: 429 Too Many Requests".to_string(),
-            codex_error_info: Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
-                http_status_code: Some(429),
-            }),
-        }),
-    });
-    let _ = next_submit_op(&mut op_rx);
+    chat.handle_codex_event(replay_status_event(
+        "turn-1",
+        ReplayState::Scheduled,
+        1,
+        Some(ReplayErrorCategory::RateLimit),
+    ));
 
     chat.maybe_send_next_queued_input();
     assert_no_submit_op(&mut op_rx);
@@ -7632,19 +7652,19 @@ async fn repeated_retry_limit_errors_do_not_advance_queue_during_retry_gap() {
         vec!["second".to_string()]
     );
 
-    chat.handle_codex_event(Event {
-        id: "err-2".into(),
-        msg: EventMsg::Error(ErrorEvent {
-            message: "exceeded retry limit, last status: 429 Too Many Requests".to_string(),
-            codex_error_info: Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
-                http_status_code: Some(429),
-            }),
-        }),
-    });
-    let _ = next_submit_op(&mut op_rx);
+    chat.handle_codex_event(replay_status_event(
+        "turn-1",
+        ReplayState::Scheduled,
+        2,
+        Some(ReplayErrorCategory::RateLimit),
+    ));
 
     chat.maybe_send_next_queued_input();
     assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.replay_status.as_ref().map(|replay| replay.attempt),
+        Some(2)
+    );
     assert_eq!(
         chat.queued_user_messages
             .iter()
@@ -7655,7 +7675,7 @@ async fn repeated_retry_limit_errors_do_not_advance_queue_during_retry_gap() {
 }
 
 #[tokio::test]
-async fn queue_user_message_during_retry_gap_stays_queued() {
+async fn queue_user_message_while_replaying_stays_queued() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.thread_id = Some(ThreadId::new());
 
@@ -7670,16 +7690,13 @@ async fn queue_user_message_during_retry_gap_stays_queued() {
             collaboration_mode_kind: ModeKind::Default,
         }),
     });
-    chat.handle_codex_event(Event {
-        id: "err-1".into(),
-        msg: EventMsg::Error(ErrorEvent {
-            message: "exceeded retry limit, last status: 429 Too Many Requests".to_string(),
-            codex_error_info: Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
-                http_status_code: Some(429),
-            }),
-        }),
-    });
-    let _ = next_submit_op(&mut op_rx);
+    chat.handle_codex_event(replay_status_event(
+        "turn-1",
+        ReplayState::Scheduled,
+        1,
+        Some(ReplayErrorCategory::RateLimit),
+    ));
+    assert_no_submit_op(&mut op_rx);
 
     chat.queue_user_message(UserMessage::from("late queued".to_string()));
 
@@ -7694,7 +7711,7 @@ async fn queue_user_message_during_retry_gap_stays_queued() {
 }
 
 #[tokio::test]
-async fn transient_steer_retry_does_not_duplicate_pending_steers() {
+async fn replay_status_for_steer_does_not_duplicate_pending_steers() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.thread_id = Some(ThreadId::new());
 
@@ -7712,25 +7729,21 @@ async fn transient_steer_retry_does_not_duplicate_pending_steers() {
     assert_eq!(chat.pending_steers.len(), 1);
 
     chat.handle_codex_event(Event {
-        id: "err-1".into(),
-        msg: EventMsg::Error(ErrorEvent {
-            message: "response stream disconnected".to_string(),
-            codex_error_info: Some(CodexErrorInfo::ResponseStreamDisconnected {
-                http_status_code: Some(502),
-            }),
+        id: "turn-start-1".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
         }),
     });
+    chat.handle_codex_event(replay_status_event(
+        "turn-1",
+        ReplayState::Scheduled,
+        1,
+        Some(ReplayErrorCategory::Transport),
+    ));
 
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { items, .. } => assert_eq!(
-            items,
-            vec![UserInput::Text {
-                text: "retry steer".to_string(),
-                text_elements: Vec::new(),
-            }]
-        ),
-        other => panic!("expected Op::UserTurn retry, got {other:?}"),
-    }
+    assert_no_submit_op(&mut op_rx);
     assert_eq!(chat.pending_steers.len(), 1);
 
     complete_user_message_for_inputs(
@@ -9685,6 +9698,36 @@ async fn replayed_stream_error_does_not_set_retry_status_or_status_indicator() {
     assert_eq!(chat.current_status_header, "Idle");
     assert!(chat.retry_status_header.is_none());
     assert!(chat.bottom_pane.status_widget().is_none());
+}
+
+#[tokio::test]
+async fn running_replay_status_keeps_working_header_before_first_retry() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(replay_status_event("turn-1", ReplayState::Running, 0, None));
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Working");
+    assert_eq!(status.details(), None);
+    assert_snapshot!("running_replay_before_backoff_header", status.header());
+}
+
+#[tokio::test]
+async fn running_replay_status_switches_to_replaying_after_backoff() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(replay_status_event("turn-1", ReplayState::Running, 1, None));
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Replaying");
+    assert_eq!(status.details(), None);
+    assert_snapshot!("running_replay_after_backoff_header", status.header());
 }
 
 #[tokio::test]

@@ -125,6 +125,10 @@ use codex_protocol::protocol::McpToolCallEndEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::RateLimitSnapshot;
+use codex_protocol::protocol::ReplayErrorCategory;
+use codex_protocol::protocol::ReplayPauseReason;
+use codex_protocol::protocol::ReplayState;
+use codex_protocol::protocol::ReplayStatusEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::SkillMetadata as ProtocolSkillMetadata;
@@ -295,6 +299,7 @@ use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 
 use chrono::Local;
+use chrono::Utc;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::ThreadManager;
@@ -523,46 +528,6 @@ fn rate_limit_error_kind(info: &CodexErrorInfo) -> Option<RateLimitErrorKind> {
     }
 }
 
-fn should_retry_current_message_immediately(
-    codex_error_info: Option<&CodexErrorInfo>,
-    message: &str,
-) -> bool {
-    match codex_error_info {
-        Some(
-            CodexErrorInfo::ServerOverloaded
-            | CodexErrorInfo::HttpConnectionFailed { .. }
-            | CodexErrorInfo::ResponseStreamConnectionFailed { .. }
-            | CodexErrorInfo::InternalServerError
-            | CodexErrorInfo::ResponseStreamDisconnected { .. }
-            | CodexErrorInfo::ResponseTooManyFailedAttempts { .. },
-        ) => true,
-        Some(
-            CodexErrorInfo::ContextWindowExceeded
-            | CodexErrorInfo::UsageLimitExceeded
-            | CodexErrorInfo::Unauthorized
-            | CodexErrorInfo::BadRequest
-            | CodexErrorInfo::SandboxError
-            | CodexErrorInfo::ThreadRollbackFailed,
-        ) => false,
-        Some(CodexErrorInfo::Other) | None => {
-            let message = message.to_ascii_lowercase();
-            [
-                "429",
-                "too many requests",
-                "retry limit",
-                "connection failed",
-                "temporarily unavailable",
-                "timeout",
-                "timed out",
-                "server overloaded",
-                "stream disconnected",
-            ]
-            .iter()
-            .any(|pattern| message.contains(pattern))
-        }
-    }
-}
-
 fn should_hold_queue_after_error(
     codex_error_info: Option<&CodexErrorInfo>,
     _message: &str,
@@ -700,10 +665,9 @@ pub(crate) struct ChatWidget {
     next_queued_message_seq: u64,
     // User message most recently submitted to core and still awaiting a terminal turn outcome.
     in_flight_user_message: Option<UserMessage>,
-    // Retries the failed in-flight message before advancing queued drafts after transient failures.
-    retry_current_user_message: Option<UserMessage>,
     // Preserves the failed current message when the queue must pause but should not auto-retry.
     paused_current_user_message: Option<UserMessage>,
+    replay_status: Option<ReplayStatusEvent>,
     // The live turn id most recently started by core, if any.
     active_turn_id: Option<String>,
     // Turn ids that already ended locally via error/abort, so late TurnComplete events must not
@@ -1065,7 +1029,7 @@ enum ReplayKind {
 
 impl ChatWidget {
     fn retry_or_pause_blocks_submission(&self) -> bool {
-        self.retry_current_user_message.is_some() || self.paused_current_user_message.is_some()
+        self.paused_current_user_message.is_some()
     }
 
     fn queue_advancement_blocked(&self) -> bool {
@@ -1317,12 +1281,142 @@ impl ChatWidget {
 
     fn refresh_runtime_metrics(&mut self) {
         self.collect_runtime_metrics_delta();
+        self.refresh_replay_status_indicator();
     }
 
     fn restore_retry_status_header_if_present(&mut self) {
         if let Some(header) = self.retry_status_header.take() {
             self.set_status_header(header);
         }
+    }
+
+    fn replay_status_header(replay: &ReplayStatusEvent) -> &'static str {
+        match replay.state {
+            ReplayState::Running if replay.attempt > 0 => "Replaying",
+            ReplayState::Running => "Working",
+            ReplayState::Scheduled => "Replay scheduled",
+            ReplayState::PausedManual => "Replay paused",
+            ReplayState::PausedGate => "Replay waiting",
+            ReplayState::Completed => "Working",
+        }
+    }
+
+    fn replay_error_category_label(category: ReplayErrorCategory) -> &'static str {
+        match category {
+            ReplayErrorCategory::Transport => "transport",
+            ReplayErrorCategory::RateLimit => "rate limit",
+            ReplayErrorCategory::Server => "server",
+            ReplayErrorCategory::Auth => "auth",
+            ReplayErrorCategory::BadRequest => "bad request",
+            ReplayErrorCategory::ContextWindow => "context window",
+            ReplayErrorCategory::Sandbox => "sandbox",
+            ReplayErrorCategory::Other => "other",
+        }
+    }
+
+    fn replay_pause_reason_label(reason: ReplayPauseReason) -> &'static str {
+        match reason {
+            ReplayPauseReason::ManualInterrupt => "paused by user",
+            ReplayPauseReason::ExecApproval => "waiting for exec approval",
+            ReplayPauseReason::PatchApproval => "waiting for patch approval",
+            ReplayPauseReason::Elicitation => "waiting for elicitation",
+            ReplayPauseReason::RequestUserInput => "waiting for input",
+            ReplayPauseReason::Other => "waiting",
+        }
+    }
+
+    fn replay_countdown_label(next_retry_at: i64) -> String {
+        let remaining = next_retry_at.saturating_sub(Utc::now().timestamp());
+        if remaining <= 0 {
+            return "retrying now".to_string();
+        }
+        if remaining < 60 {
+            return format!("retry in {remaining}s");
+        }
+        let minutes = remaining / 60;
+        let seconds = remaining % 60;
+        if minutes < 60 {
+            return format!("retry in {minutes}m {seconds:02}s");
+        }
+        let hours = minutes / 60;
+        let rem_minutes = minutes % 60;
+        format!("retry in {hours}h {rem_minutes:02}m")
+    }
+
+    fn replay_status_details(&self, replay: &ReplayStatusEvent) -> Option<String> {
+        let mut parts = Vec::new();
+        if replay.attempt > 0 && !matches!(replay.state, ReplayState::Running) {
+            parts.push(format!("attempt {}", replay.attempt));
+        }
+        if let Some(category) = replay.error_category {
+            parts.push(format!(
+                "{} error",
+                Self::replay_error_category_label(category)
+            ));
+        }
+        match replay.state {
+            ReplayState::Scheduled => {
+                if let Some(next_retry_at) = replay.next_retry_at {
+                    parts.push(Self::replay_countdown_label(next_retry_at));
+                }
+            }
+            ReplayState::PausedManual | ReplayState::PausedGate => {
+                if let Some(reason) = replay.paused_reason {
+                    parts.push(Self::replay_pause_reason_label(reason).to_string());
+                }
+            }
+            ReplayState::Running | ReplayState::Completed => {}
+        }
+        if replay.is_subagent {
+            parts.push("subagent".to_string());
+        }
+        if let Some(message) = replay.message.as_ref().map(|message| message.trim())
+            && !message.is_empty()
+        {
+            parts.push(truncate_text(message, 96));
+        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+
+    fn refresh_replay_status_indicator(&mut self) {
+        let Some(replay) = self.replay_status.clone() else {
+            return;
+        };
+        self.bottom_pane.ensure_status_indicator();
+        self.bottom_pane.set_interrupt_hint_visible(matches!(
+            replay.state,
+            ReplayState::Running | ReplayState::Scheduled
+        ));
+        self.set_status(
+            Self::replay_status_header(&replay).to_string(),
+            self.replay_status_details(&replay),
+            StatusDetailsCapitalization::Preserve,
+            STATUS_DETAILS_DEFAULT_MAX_LINES,
+        );
+        if matches!(replay.state, ReplayState::Scheduled) && replay.next_retry_at.is_some() {
+            self.frame_requester
+                .schedule_frame_in(Duration::from_secs(1));
+        }
+    }
+
+    fn on_replay_status(&mut self, replay: ReplayStatusEvent) {
+        if matches!(replay.state, ReplayState::Completed) {
+            self.replay_status = None;
+            return;
+        }
+        if self.active_turn_id.is_none()
+            && matches!(replay.state, ReplayState::Running | ReplayState::Scheduled)
+        {
+            self.active_turn_id = Some(replay.turn_id.clone());
+        }
+        self.agent_turn_running =
+            matches!(replay.state, ReplayState::Running | ReplayState::Scheduled);
+        self.turn_sleep_inhibitor
+            .set_turn_running(self.agent_turn_running);
+        self.update_task_running_state();
+        self.replay_status = Some(replay);
+        self.refresh_replay_status_indicator();
+        self.request_redraw();
     }
 
     // --- Small event handlers ---
@@ -1646,6 +1740,7 @@ impl ChatWidget {
     // Raw reasoning uses the same flow as summarized reasoning
 
     fn on_task_started(&mut self) {
+        self.replay_status = None;
         self.agent_turn_running = true;
         self.turn_sleep_inhibitor.set_turn_running(true);
         self.saw_plan_update_this_turn = false;
@@ -1719,8 +1814,8 @@ impl ChatWidget {
         self.unified_exec_wait_streak = None;
         self.request_redraw();
         self.in_flight_user_message = None;
-        self.retry_current_user_message = None;
         self.paused_current_user_message = None;
+        self.replay_status = None;
 
         let had_pending_steers = !self.pending_steers.is_empty();
         self.refresh_pending_input_preview();
@@ -2008,6 +2103,7 @@ impl ChatWidget {
     fn on_server_overloaded_error(&mut self, message: String) {
         self.remember_active_turn_complete_as_stale();
         self.finalize_turn();
+        self.replay_status = None;
 
         let message = if message.trim().is_empty() {
             "Codex is currently experiencing high load.".to_string()
@@ -2017,25 +2113,20 @@ impl ChatWidget {
 
         self.add_to_history(history_cell::new_warning_event(message));
         self.request_redraw();
-        self.retry_current_user_message = self.in_flight_user_message.take();
-        self.paused_current_user_message = None;
+        self.paused_current_user_message = self.in_flight_user_message.take();
         self.maybe_send_next_queued_input();
     }
 
-    fn on_error(&mut self, message: String, retry_current_message: bool, hold_queue: bool) {
+    fn on_error(&mut self, message: String, hold_queue: bool) {
         self.remember_active_turn_complete_as_stale();
         self.finalize_turn();
+        self.replay_status = None;
         self.add_to_history(history_cell::new_error_event(message));
         self.request_redraw();
-        if retry_current_message {
-            self.retry_current_user_message = self.in_flight_user_message.take();
-            self.paused_current_user_message = None;
-        } else if hold_queue {
+        if hold_queue {
             self.paused_current_user_message = self.in_flight_user_message.take();
-            self.retry_current_user_message = None;
         } else {
             self.in_flight_user_message = None;
-            self.retry_current_user_message = None;
             self.paused_current_user_message = None;
         }
 
@@ -2124,7 +2215,6 @@ impl ChatWidget {
         self.remember_active_turn_complete_as_stale();
         self.finalize_turn();
         self.in_flight_user_message = None;
-        self.retry_current_user_message = None;
         self.paused_current_user_message = None;
         if reason == TurnAbortReason::Interrupted {
             self.clear_unified_exec_processes();
@@ -2302,8 +2392,8 @@ impl ChatWidget {
             self.queued_user_messages
                 .extend(input_state.queued_user_messages);
             self.in_flight_user_message = None;
-            self.retry_current_user_message = None;
             self.paused_current_user_message = None;
+            self.replay_status = None;
             self.active_turn_id = None;
             self.ignored_turn_complete_ids.clear();
             self.pending_rlph_exec_commands.clear();
@@ -2321,8 +2411,8 @@ impl ChatWidget {
             self.bottom_pane.set_composer_pending_pastes(Vec::new());
             self.queued_user_messages.clear();
             self.in_flight_user_message = None;
-            self.retry_current_user_message = None;
             self.paused_current_user_message = None;
+            self.replay_status = None;
             self.active_turn_id = None;
             self.ignored_turn_complete_ids.clear();
             self.pending_rlph_exec_commands.clear();
@@ -3348,8 +3438,8 @@ impl ChatWidget {
             queued_user_messages: VecDeque::new(),
             next_queued_message_seq: 0,
             in_flight_user_message: None,
-            retry_current_user_message: None,
             paused_current_user_message: None,
+            replay_status: None,
             active_turn_id: None,
             ignored_turn_complete_ids: HashSet::new(),
             pending_rlph_exec_commands: VecDeque::new(),
@@ -3542,8 +3632,8 @@ impl ChatWidget {
             queued_user_messages: VecDeque::new(),
             next_queued_message_seq: 0,
             in_flight_user_message: None,
-            retry_current_user_message: None,
             paused_current_user_message: None,
+            replay_status: None,
             active_turn_id: None,
             ignored_turn_complete_ids: HashSet::new(),
             pending_rlph_exec_commands: VecDeque::new(),
@@ -3720,8 +3810,8 @@ impl ChatWidget {
             queued_user_messages: VecDeque::new(),
             next_queued_message_seq: 0,
             in_flight_user_message: None,
-            retry_current_user_message: None,
             paused_current_user_message: None,
+            replay_status: None,
             active_turn_id: None,
             ignored_turn_complete_ids: HashSet::new(),
             pending_rlph_exec_commands: VecDeque::new(),
@@ -5005,8 +5095,8 @@ impl ChatWidget {
             return;
         }
         self.in_flight_user_message = Some(submitted_user_message);
-        self.retry_current_user_message = None;
         self.paused_current_user_message = None;
+        self.replay_status = None;
 
         if is_retry {
             self.needs_final_message_separator = false;
@@ -5229,8 +5319,6 @@ impl ChatWidget {
                 message,
                 codex_error_info,
             }) => {
-                let retry_current_message =
-                    should_retry_current_message_immediately(codex_error_info.as_ref(), &message);
                 let hold_queue = should_hold_queue_after_error(codex_error_info.as_ref(), &message);
                 if let Some(info) = codex_error_info.as_ref()
                     && let Some(kind) = rate_limit_error_kind(info)
@@ -5240,13 +5328,14 @@ impl ChatWidget {
                             self.on_server_overloaded_error(message)
                         }
                         RateLimitErrorKind::UsageLimit | RateLimitErrorKind::Generic => {
-                            self.on_error(message, retry_current_message, hold_queue)
+                            self.on_error(message, true)
                         }
                     }
                 } else {
-                    self.on_error(message, retry_current_message, hold_queue);
+                    self.on_error(message, hold_queue);
                 }
             }
+            EventMsg::ReplayStatus(ev) => self.on_replay_status(ev),
             EventMsg::McpStartupUpdate(ev) => self.on_mcp_startup_update(ev),
             EventMsg::McpStartupComplete(ev) => self.on_mcp_startup_complete(ev),
             EventMsg::TurnAborted(ev) => match ev.reason {
@@ -5256,11 +5345,7 @@ impl ChatWidget {
                 TurnAbortReason::Replaced => {
                     self.pending_steers.clear();
                     self.refresh_pending_input_preview();
-                    self.on_error(
-                        "Turn aborted: replaced by a new task".to_owned(),
-                        false,
-                        false,
-                    )
+                    self.on_error("Turn aborted: replaced by a new task".to_owned(), false)
                 }
                 TurnAbortReason::ReviewEnded => {
                     self.on_interrupted_turn(ev.reason);
@@ -5565,13 +5650,6 @@ impl ChatWidget {
     // If idle and there are queued inputs, submit exactly one to start the next turn.
     pub(crate) fn maybe_send_next_queued_input(&mut self) {
         if self.suppress_queue_autosend {
-            return;
-        }
-        if !self.bottom_pane.is_task_running()
-            && let Some(user_message) = self.retry_current_user_message.take()
-        {
-            self.submit_user_message_internal(user_message, true);
-            self.refresh_pending_input_preview();
             return;
         }
         if self.in_flight_user_message.is_some() {
