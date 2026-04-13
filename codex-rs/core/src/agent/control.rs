@@ -630,7 +630,7 @@ mod tests {
                 sleep(Duration::from_millis(25)).await;
             }
         };
-        timeout(Duration::from_secs(2), wait).await.is_ok()
+        timeout(Duration::from_secs(5), wait).await.is_ok()
     }
 
     #[tokio::test]

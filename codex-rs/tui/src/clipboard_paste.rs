@@ -2,6 +2,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use tempfile::Builder;
 
+use tempfile::Builder;
+
 #[derive(Debug, Clone)]
 pub enum PasteImageError {
     ClipboardUnavailable(String),
